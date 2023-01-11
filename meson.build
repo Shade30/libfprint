@@ -1,5 +1,5 @@
 project('libfprint', [ 'c', 'cpp' ],
-    version: '1.94.4',
+    version: '1.94.5',
     license: 'LGPLv2.1+',
     default_options: [
         'buildtype=debugoptimized',
@@ -113,6 +113,7 @@ default_drivers = [
     'vfs101',
     'vfs301',
     'vfs0050',
+    'vfs0090',
     'etes603',
     'egis0570',
     'vcom5s',
@@ -158,6 +159,7 @@ driver_helper_mapping = {
     'aes4000' : [ 'aeslib', 'aes3k' ],
     'uru4000' : [ 'nss' ],
     'elanspi' : [ 'udev' ],
+    'vfs0090' : [ 'nss', 'aes3k', 'openssl' ],
     'virtual_image'          : [ 'virtual' ],
     'virtual_device'         : [ 'virtual' ],
     'virtual_device_storage' : [ 'virtual' ],
@@ -231,6 +233,13 @@ foreach i : driver_helpers
         libfprint_conf.set10('HAVE_UDEV', true)
 
         optional_deps += gudev_dep
+    elif i == 'openssl'
+        openssl_dep = dependency('openssl', required: false)
+        if not openssl_dep.found()
+            error('openssl is required for @0@ and possibly others'.format(driver))
+        endif
+
+        optional_deps += openssl_dep
     endif
 endforeach
 

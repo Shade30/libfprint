@@ -121,6 +121,8 @@ driver_sources = {
         [ 'drivers/egis0570.c' ],
     'vfs0050' :
         [ 'drivers/vfs0050.c' ],
+    'vfs0090' :
+        [ 'drivers/vfs0090/vfs0090.c', 'drivers/vfs0090/vfs0090.h' ],
     'elan' :
         [ 'drivers/elan.c' ],
     'elanmoc' :
@@ -151,6 +153,8 @@ helper_sources = {
     'aes3k' :
         [ 'drivers/aes3k.c' ],
     'nss' :
+        [ ],
+    'openssl' :
         [ ],
     'udev' :
         [ ],
