@@ -156,6 +156,8 @@ helper_sources = {
         [ ],
     'openssl' :
         [ ],
+    'submodule' :
+        [ ],
     'udev' :
         [ ],
     'virtual' :

@@ -159,7 +159,7 @@ driver_helper_mapping = {
     'aes4000' : [ 'aeslib', 'aes3k' ],
     'uru4000' : [ 'nss' ],
     'elanspi' : [ 'udev' ],
-    'vfs0090' : [ 'nss', 'aes3k', 'openssl' ],
+    'vfs0090' : [ 'nss', 'aes3k', 'openssl', 'submodule' ],
     'virtual_image'          : [ 'virtual' ],
     'virtual_device'         : [ 'virtual' ],
     'virtual_device_storage' : [ 'virtual' ],
@@ -240,6 +240,18 @@ foreach i : driver_helpers
         endif
 
         optional_deps += openssl_dep
+    elif i == 'submodule'
+        git = find_program('git', required: false)
+        if git.found()
+            message('Updating the @0@ submodule'.format(driver))
+            c = run_command(git, ['submodule', 'update', '--init', '--recursive'])
+
+            if c.returncode() != 0
+                error('Impossible to update the @0@ submodule'.format(driver))
+            endif
+        else
+            message('Ensure you updated the @0@ submodule!'.format(driver))
+        endif
     endif
 endforeach
 
