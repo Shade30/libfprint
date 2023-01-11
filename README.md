@@ -1,127 +1,86 @@
-## Validity Sensor `138a:0090` and `138a:0097` libfprint driver
-#### A linux driver for 2016 ThinkPad's fingerprint readers
-
-[![See it in action!](https://img.youtube.com/vi/dYe8eKaoUSE/0.jpg)](https://www.youtube.com/watch?v=dYe8eKaoUSE)`
-
-Thanks to the amazing work that [nmikhailov](https://github.com/nmikhailov) did in his [prototype](https://github.com/nmikhailov/Validity90/) and [uunicorn](https://github.com/uunicorn/) in [python-validity](https://github.com/uunicorn/python-validity) and [synaWudfBioUsb-sandbox](https://github.com/uunicorn/synaWudfBioUsb-sandbox), I spent some time in getting a libfprint driver for the `138a:0090` (and `138a:0097`) device up...
-
- * It only works if the device has been initialized using [validity-sensors-tools/](https://snapcraft.io/validity-sensors-tools/)
-   - Alernatively, but it's less secure, you can use a Windows installation with VirtualBox (sharing USB) guest or with a Windows installation in bare metal
- * This version works only with fprintd2, if you still use fprintd see the [old version](https://github.com/3v1n0/libfprint/tree/vfs0090-libfprint1).
- * Most of the device interaction and crypto code is coming from the prototype, so basically it needs lots of cleanup, but I hope to rebase this on the code from python-validity
- * Here enroll, verification, led and all the operations work
- * It uses libfprint image comparison algorithm, we might move to in-device check later.
-
-You can test it using the [examples](tree/vfs0090/examples) or just using `fprintd-*` tools (GNOME supports it natively from control center).
 
 
-### Device initialization and pairing
+<div align="center">
 
-I recommend using the [validity-sensors-tools/](https://snapcraft.io/validity-sensors-tools/), you can install it in any distro as snap, or you can use it manually from sources located in [my python validity fork](https://github.com/3v1n0/python-validity)
+# LibFPrint
 
-```bash
-sudo snap install validity-sensors-tools
+*LibFPrint is part of the **[FPrint][Website]** project.*
 
-# Give it access to the usb devices
-sudo snap connect validity-sensors-tools:raw-usb
-sudo snap connect validity-sensors-tools:hardware-observe
+<br/>
 
-# Initialize the device
-sudo validity-sensors-tools.initializer
+[![Button Website]][Website]
+[![Button Documentation]][Documentation]
 
-# Test the device
-sudo validity-sensors-tools.led-test
+[![Button Supported]][Supported]
+[![Button Unsupported]][Unsupported]
 
-# This is needed and only works in 138a:0097:
-sudo validity-sensors-tools.enroll --finger-id [0-9]
+[![Button Contribute]][Contribute]
+[![Button Contributors]][Contributors]
 
-# See other available tools
-validity-sensors-tools --help
-```
+</div>
 
-[![Get it from the Snap Store](https://snapcraft.io/static/images/badges/en/snap-store-black.svg)](https://snapcraft.io/validity-sensors-tools)
+## History
 
-#### Match on Chip
+**LibFPrint** was originally developed as part of an
+academic project at the **[University Of Manchester]**.
 
-This is the only supported way by `138a:0097`, so once you've enrolled your fingers with `validity-sensors-tools.enroll` you will be able to re-enroll your fingers in fprintd to use them in linux as well.
+It aimed to hide the differences between consumer
+fingerprint scanners and provide a single uniform
+API to application developers.
 
-This unfortunately can't be done in `138a:0090`, but you can still use a Windows installation (even in VirtualBox) to enroll the prints to save them in the chip and enable the match-on-sensor, this can make the verification faster, safer and higher quality.<br />
-Unfortunately there's currently no easy way to implement this in this driver without reverse-engineer the fingerprint template creation that the windows drivers does in host.
+## Goal
 
-#### Ubuntu installation
+The ultimate goal of the **FPrint** project is to make
+fingerprint scanners widely and easily usable under
+common Linux environments.
 
-If you're using ubuntu just use [this PPA](https://launchpad.net/~3v1n0/+archive/ubuntu/libfprint-vfs0090) to get the libfprint TOD packages with vfs0090 sensor support.
+## License
 
-Also, in the ubuntu (and derivates) the code that you will use will be based on the [tod submodule](https://gitlab.freedesktop.org/3v1n0/libfprint-tod-vfs0090).
+`Section 6` of the license states that for compiled works that use
+this library, such works must include **LibFPrint** copyright notices
+alongside the copyright notices for the other parts of the work.
 
-You can enroll your fingers by using the `fprintd-enroll` utility or from UI using `unity-control-center user-accounts` in unity or `gnome-control-center user-accounts` in GNOME (it's the same as going in System settings -> User accounts pane and enable the fingerprint login).
+**LibFPrint** includes code from **NIST's** **[NBIS]** software distribution.
 
-So, in steps (for ubuntu) it would be:
-```bash
-# Initialize the device
-sudo snap install validity-sensors-tools
-sudo snap connect validity-sensors-tools:raw-usb
-sudo snap connect validity-sensors-tools:hardware-observe
-sudo validity-sensors-tools.initializer
+We include **Bozorth3** from the **[US Export Controlled]**
+distribution, which we have determined to be fine
+being shipped in an open source project.
 
-# Add the repository and install the tod package (supports both chips)
-sudo add-apt-repository -u ppa:3v1n0/libfprint-vfs0090
-sudo apt install libfprint-2-tod-vfs0090
-```
+<br/>
 
-Then go in system settings (account) and enable the fingerprint login
+<div align="right">
 
-#### Arch linux Installation
+[![Badge License]][License]
 
-Install packages:
- * `fprintd`
- * `libfprint-vfs0090-git` from AUR
-
-#### Fedora (tested on 28)
-- `sudo dnf install -y libusb*-devel libtool nss nss-devel gtk3-devel glib2-devel openssl openssl-devel libXv-devel gcc-c++`
-- `git clone https://github.com/3v1n0/libfprint`
-- `meson libfprint libfprint/_build && sudo ninja -C libfprint/_build install`
-
-#### NixOS
-
-NixOS has the tod module in nixpkgs-unstable (merged June 2021).
-On release 21.05 or newer, and assuming `pkgsUnstable` is an unstable nixpkgs, configure like this:
-
-```
-{
-  services.fprintd.enable = true;
-  services.fprintd.tod.enable = true;
-  services.fprintd.tod.driver = pkgsUnstable.libfprint-2-tod1-vfs0090;
-}
-```
-
-#### Other distros
- - `git clone https://github.com/3v1n0/libfprint`
- - `meson libfprint libfprint/_build && sudo ninja -C libfprint/_build install`
+</div>
 
 
-#### fprintd enrolling
-```bash
-for finger in {left,right}-{thumb,{index,middle,ring,little}-finger}; do fprintd-enroll -f "$finger" "$USER"; done
-```
+<!----------------------------------------------------------------------------->
 
-#### Help testing (only for `138a:0090`)
+[Documentation]: https://fprint.freedesktop.org/libfprint-dev/
+[Contributors]: https://gitlab.freedesktop.org/libfprint/libfprint/-/graphs/master
+[Unsupported]: https://gitlab.freedesktop.org/libfprint/wiki/-/wikis/Unsupported-Devices
+[Supported]: https://fprint.freedesktop.org/supported-devices.html
+[Website]: https://fprint.freedesktop.org/
 
-It would be nice if you could help in tuning the value of the `bz3_threshold`, as that's the value that defines how different should be the prints, and so it's important for having better security. I've set it to `12` currently, but of course increasing the number of prints we enroll or the image quality that could be increased.
+[Contribute]: ./HACKING.md
+[License]: ./COPYING
 
-Using `fprint_demo` or monitor fprintd from journalctl you should be able to see the values such as `fpi_img_detect_minutiae` and `fpi_img_compare_print_data` in the log, like
+[University Of Manchester]: https://www.manchester.ac.uk/
+[US Export Controlled]: https://fprint.freedesktop.org/us-export-control.html
+[NBIS]: http://fingerprint.nist.gov/NBIS/index.html
 
-```
-fp:debug [fpi_img_new] length=82944
-fp:debug [fpi_imgdev_image_captured]
-fp:debug [fpi_img_detect_minutiae] minutiae scan completed in 0,080257 secs
-fp:debug [fpi_img_detect_minutiae] detected 18 minutiae
-fp:debug [print_data_new] driver=15 devtype=0000
-fp:debug [fpi_img_compare_print_data] score 9
-fp:debug [fpi_img_compare_print_data] score 12
-fp:debug [fpi_img_compare_print_data] score 18
-fp:debug [fpi_img_compare_print_data] score 10
-fp:debug [fpi_img_compare_print_data] score 12
-```
 
-The score is the value the print got for you, compared to each sample that fprint saves... And to match it needs to reach the said threshold (so 12 for now). For my fingers this value seems secure enough, but.... Let's see if we can increase it.
+<!---------------------------------[ Badges ]---------------------------------->
+
+[Badge License]: https://img.shields.io/badge/License-LGPL2.1-015d93.svg?style=for-the-badge&labelColor=blue
+
+
+<!---------------------------------[ Buttons ]--------------------------------->
+
+[Button Documentation]: https://img.shields.io/badge/Documentation-04ACE6?style=for-the-badge&logoColor=white&logo=BookStack
+[Button Contributors]: https://img.shields.io/badge/Contributors-FF4F8B?style=for-the-badge&logoColor=white&logo=ActiGraph
+[Button Unsupported]: https://img.shields.io/badge/Unsupported_Devices-EF2D5E?style=for-the-badge&logoColor=white&logo=AdBlock
+[Button Contribute]: https://img.shields.io/badge/Contribute-66459B?style=for-the-badge&logoColor=white&logo=Git
+[Button Supported]: https://img.shields.io/badge/Supported_Devices-428813?style=for-the-badge&logoColor=white&logo=AdGuard
+[Button Website]: https://img.shields.io/badge/Homepage-3B80AE?style=for-the-badge&logoColor=white&logo=freedesktopDotOrg

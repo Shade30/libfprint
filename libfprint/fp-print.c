@@ -61,6 +61,7 @@ enum {
   /* Private property*/
   PROP_FPI_TYPE,
   PROP_FPI_DATA,
+  PROP_FPI_PRINTS,
   N_PROPS
 };
 
@@ -133,6 +134,10 @@ fp_print_get_property (GObject    *object,
       g_value_set_variant (value, self->data);
       break;
 
+    case PROP_FPI_PRINTS:
+      g_value_set_pointer (value, self->prints);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -186,6 +191,11 @@ fp_print_set_property (GObject      *object,
     case PROP_FPI_DATA:
       g_clear_pointer (&self->data, g_variant_unref);
       self->data = g_value_dup_variant (value);
+      break;
+
+    case PROP_FPI_PRINTS:
+      g_clear_pointer (&self->prints, g_ptr_array_unref);
+      self->prints = g_value_get_pointer (value);
       break;
 
     default:
@@ -281,7 +291,7 @@ fp_print_class_init (FpPrintClass *klass)
                        "Type",
                        "Private: The type of the print data",
                        FPI_TYPE_PRINT_TYPE,
-                       FPI_PRINT_RAW,
+                       FPI_PRINT_UNDEFINED,
                        G_PARAM_STATIC_STRINGS | G_PARAM_READWRITE | G_PARAM_EXPLICIT_NOTIFY);
 
   /**
@@ -297,6 +307,19 @@ fp_print_class_init (FpPrintClass *klass)
                           "The raw data for internal use only",
                           G_VARIANT_TYPE_ANY,
                           NULL,
+                          G_PARAM_STATIC_STRINGS | G_PARAM_READWRITE);
+
+  /**
+   * FpPrint::fpi-prints: (skip)
+   *
+   * This property is only for internal purposes.
+   *
+   * Stability: private
+   */
+  properties[PROP_FPI_PRINTS] =
+    g_param_spec_pointer ("fpi-prints",
+                          "Prints",
+                          "Prints for internal use only",
                           G_PARAM_STATIC_STRINGS | G_PARAM_READWRITE);
 
   g_object_class_install_properties (object_class, N_PROPS, properties);
@@ -316,7 +339,7 @@ fp_print_init (FpPrint *self)
  * create a new print, fill in the relevant metadata, and then start
  * enrollment.
  *
- * Returns: (transfer floating): A newyl created #FpPrint
+ * Returns: (transfer floating): A newly created #FpPrint
  */
 FpPrint *
 fp_print_new (FpDevice *device)
@@ -667,36 +690,25 @@ fp_print_serialize (FpPrint *print,
       for (i = 0; i < print->prints->len; i++)
         {
           struct xyt_struct *xyt = g_ptr_array_index (print->prints, i);
-          gint j;
-          gint32 *col = g_new (gint32, xyt->nrows);
 
           g_variant_builder_open (&nested, G_VARIANT_TYPE ("(aiaiai)"));
 
-          for (j = 0; j < xyt->nrows; j++)
-            col[j] = GINT32_TO_LE (xyt->xcol[j]);
           g_variant_builder_add_value (&nested,
                                        g_variant_new_fixed_array (G_VARIANT_TYPE_INT32,
-                                                                  col,
+                                                                  xyt->xcol,
                                                                   xyt->nrows,
-                                                                  sizeof (col[0])));
-
-          for (j = 0; j < xyt->nrows; j++)
-            col[j] = GINT32_TO_LE (xyt->ycol[j]);
+                                                                  sizeof (xyt->xcol[0])));
           g_variant_builder_add_value (&nested,
                                        g_variant_new_fixed_array (G_VARIANT_TYPE_INT32,
-                                                                  col,
+                                                                  xyt->ycol,
                                                                   xyt->nrows,
-                                                                  sizeof (col[0])));
-
-          for (j = 0; j < xyt->nrows; j++)
-            col[j] = GINT32_TO_LE (xyt->thetacol[j]);
+                                                                  sizeof (xyt->ycol[0])));
           g_variant_builder_add_value (&nested,
                                        g_variant_new_fixed_array (G_VARIANT_TYPE_INT32,
-                                                                  col,
+                                                                  xyt->thetacol,
                                                                   xyt->nrows,
-                                                                  sizeof (col[0])));
+                                                                  sizeof (xyt->thetacol[0])));
           g_variant_builder_close (&nested);
-          g_free (col);
         }
 
       g_variant_builder_close (&nested);
@@ -819,6 +831,7 @@ fp_print_deserialize (const guchar *data,
                              "device-id", device_id,
                              "device-stored", device_stored,
                              NULL);
+      g_object_ref_sink (result);
       fpi_print_set_type (result, FPI_PRINT_NBIS);
       for (i = 0; i < g_variant_n_children (prints); i++)
         {
@@ -868,6 +881,7 @@ fp_print_deserialize (const guchar *data,
                              "device-stored", device_stored,
                              "fpi-data", fp_data,
                              NULL);
+      g_object_ref_sink (result);
     }
   else
     {
@@ -886,8 +900,7 @@ fp_print_deserialize (const guchar *data,
   return g_steal_pointer (&result);
 
 invalid_format:
-  *error = g_error_new_literal (G_IO_ERROR,
-                                G_IO_ERROR_INVALID_DATA,
-                                "Data could not be parsed");
-  return FALSE;
+  g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+               "Data could not be parsed");
+  return NULL;
 }

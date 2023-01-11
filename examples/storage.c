@@ -2,7 +2,7 @@
  * Trivial storage driver for example programs
  *
  * Copyright (C) 2019 Benjamin Berg <bberg@redhat.com>
- * Copyright (C) 2019 Marco Trevisan <marco.trevisan@canonical.com>
+ * Copyright (C) 2019-2020 Marco Trevisan <marco.trevisan@canonical.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -102,8 +102,23 @@ save_data (GVariant *data)
   return 0;
 }
 
+static FpPrint *
+load_print_from_data (GVariant *data)
+{
+  const guchar *stored_data = NULL;
+  gsize stored_len;
+  FpPrint *print;
+
+  g_autoptr(GError) error = NULL;
+  stored_data = (const guchar *) g_variant_get_fixed_array (data, &stored_len, 1);
+  print = fp_print_deserialize (stored_data, stored_len, &error);
+  if (error)
+    g_warning ("Error deserializing data: %s", error->message);
+  return print;
+}
+
 int
-print_data_save (FpPrint *print, FpFinger finger)
+print_data_save (FpPrint *print, FpFinger finger, gboolean update_fingerprint)
 {
   g_autofree gchar *descr = get_print_data_descriptor (print, NULL, finger);
 
@@ -137,40 +152,87 @@ print_data_load (FpDevice *dev, FpFinger finger)
 
   g_autoptr(GVariant) val = NULL;
   g_autoptr(GVariantDict) dict = NULL;
-  const guchar *stored_data = NULL;
-  gsize stored_len;
 
   dict = load_data ();
   val = g_variant_dict_lookup_value (dict, descr, G_VARIANT_TYPE ("ay"));
 
   if (val)
-    {
-      FpPrint *print;
-      g_autoptr(GError) error = NULL;
-
-      stored_data = (const guchar *) g_variant_get_fixed_array (val, &stored_len, 1);
-      print = fp_print_deserialize (stored_data, stored_len, &error);
-
-      if (error)
-        g_warning ("Error deserializing data: %s", error->message);
-
-      return print;
-    }
+    return load_print_from_data (val);
 
   return NULL;
 }
 
-FpPrint *
-print_create_template (FpDevice *dev, FpFinger finger)
+GPtrArray *
+gallery_data_load (FpDevice *dev)
 {
+  g_autoptr(GVariantDict) dict = NULL;
+  g_autoptr(GVariant) dict_variant = NULL;
+  g_autofree char *dev_prefix = NULL;
+  GPtrArray *gallery;
+  const char *driver;
+  const char *dev_id;
+  GVariantIter iter;
+  GVariant *value;
+  gchar *key;
+
+  gallery = g_ptr_array_new_with_free_func (g_object_unref);
+  dict = load_data ();
+  dict_variant = g_variant_dict_end (dict);
+  driver = fp_device_get_driver (dev);
+  dev_id = fp_device_get_device_id (dev);
+  dev_prefix = g_strdup_printf ("%s/%s/", driver, dev_id);
+
+  g_variant_iter_init (&iter, dict_variant);
+  while (g_variant_iter_loop (&iter, "{sv}", &key, &value))
+    {
+      FpPrint *print;
+      const guchar *stored_data;
+      g_autoptr(GError) error = NULL;
+      gsize stored_len;
+
+      if (!g_str_has_prefix (key, dev_prefix))
+        continue;
+
+      stored_data = (const guchar *) g_variant_get_fixed_array (value, &stored_len, 1);
+      print = fp_print_deserialize (stored_data, stored_len, &error);
+
+      if (error)
+        {
+          g_warning ("Error deserializing data: %s", error->message);
+          continue;
+        }
+
+      g_ptr_array_add (gallery, print);
+    }
+
+  return gallery;
+}
+
+FpPrint *
+print_create_template (FpDevice *dev, FpFinger finger, gboolean load_existing)
+{
+  g_autoptr(GVariantDict) dict = NULL;
   g_autoptr(GDateTime) datetime = NULL;
   g_autoptr(GDate) date = NULL;
+  g_autoptr(GVariant) existing_val = NULL;
+  g_autofree gchar *descr = get_print_data_descriptor (NULL, dev, finger);
   FpPrint *template = NULL;
   gint year, month, day;
 
-  template = fp_print_new (dev);
-  fp_print_set_finger (template, finger);
-  fp_print_set_username (template, g_get_user_name ());
+  if (load_existing)
+    {
+      dict = load_data ();
+      existing_val = g_variant_dict_lookup_value (dict, descr, G_VARIANT_TYPE ("ay"));
+      if (existing_val != NULL)
+        template = load_print_from_data (existing_val);
+    }
+  if (template == NULL)
+    {
+      template = fp_print_new (dev);
+      fp_print_set_finger (template, finger);
+      fp_print_set_username (template, g_get_user_name ());
+    }
+
   datetime = g_date_time_new_now_local ();
   g_date_time_get_ymd (datetime, &year, &month, &day);
   date = g_date_new_dmy (day, month, year);
@@ -180,7 +242,7 @@ print_create_template (FpDevice *dev, FpFinger finger)
 }
 
 
-static gboolean
+gboolean
 save_image_to_pgm (FpImage *img, const char *path)
 {
   FILE *fd = fopen (path, "w");

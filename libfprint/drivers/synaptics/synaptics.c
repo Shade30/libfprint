@@ -27,9 +27,24 @@
 
 G_DEFINE_TYPE (FpiDeviceSynaptics, fpi_device_synaptics, FP_TYPE_DEVICE)
 
-static const FpIdEntry id_table[] = {
-  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0xBD,  },
+static void init_identify_msg (FpDevice *device);
+static void compose_and_send_identify_msg (FpDevice *device);
 
+static const FpIdEntry id_table[] = {
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00BD,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00DF,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00F9,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00FC,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00C2,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0100,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00F0,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0103,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0123,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0126,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0129,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0168,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x015F,  },
+  { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0104,  },
   { .vid = 0,  .pid = 0,  .driver_data = 0 },   /* terminating entry */
 };
 
@@ -78,10 +93,17 @@ cmd_receive_cb (FpiUsbTransfer *transfer,
       if (msg_resp.payload[0] == 0x01)
         {
           self->finger_on_sensor = TRUE;
+          fpi_device_report_finger_status_changes (device,
+                                                   FP_FINGER_STATUS_PRESENT,
+                                                   FP_FINGER_STATUS_NONE);
         }
       else
         {
           self->finger_on_sensor = FALSE;
+          fpi_device_report_finger_status_changes (device,
+                                                   FP_FINGER_STATUS_NONE,
+                                                   FP_FINGER_STATUS_PRESENT);
+
           if (self->cmd_complete_on_removal)
             {
               fpi_ssm_mark_completed (transfer->ssm);
@@ -108,7 +130,7 @@ cmd_receive_cb (FpiUsbTransfer *transfer,
     {
       if (resp.response_id == BMKT_RSP_CANCEL_OP_OK)
         {
-          fp_dbg ("Received cancellation success resonse");
+          fp_dbg ("Received cancellation success response");
           fpi_ssm_mark_failed (transfer->ssm,
                                g_error_new_literal (G_IO_ERROR,
                                                     G_IO_ERROR_CANCELLED,
@@ -181,24 +203,37 @@ cmd_interrupt_cb (FpiUsbTransfer *transfer,
                   GError         *error)
 {
   g_debug ("interrupt transfer done");
+  fpi_device_critical_enter (device);
+
   if (error)
     {
       if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         {
           g_error_free (error);
-          fpi_ssm_jump_to_state (transfer->ssm, SYNAPTICS_CMD_GET_RESP);
+          if (FPI_DEVICE_SYNAPTICS (device)->cmd_suspended)
+            fpi_ssm_jump_to_state (transfer->ssm, SYNAPTICS_CMD_SUSPENDED);
+          else
+            fpi_ssm_jump_to_state (transfer->ssm, SYNAPTICS_CMD_GET_RESP);
           return;
         }
 
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
-  g_clear_pointer (&error, g_error_free);
 
-  if (transfer->buffer[0] & USB_ASYNC_MESSAGE_PENDING || error)
-    fpi_ssm_next_state (transfer->ssm);
+  if (transfer->buffer[0] & USB_ASYNC_MESSAGE_PENDING)
+    {
+      fpi_ssm_next_state (transfer->ssm);
+    }
   else
-    fpi_usb_transfer_submit (transfer, 1000, NULL, cmd_interrupt_cb, NULL);
+    {
+      fpi_device_critical_leave (device);
+      fpi_usb_transfer_submit (fpi_usb_transfer_ref (transfer),
+                               0,
+                               NULL,
+                               cmd_interrupt_cb,
+                               NULL);
+    }
 }
 
 static void
@@ -240,6 +275,9 @@ synaptics_cmd_run_state (FpiSsm   *ssm,
       break;
 
     case SYNAPTICS_CMD_WAIT_INTERRUPT:
+      /* Interruptions are permitted only during an interrupt transfer */
+      fpi_device_critical_leave (dev);
+
       transfer = fpi_usb_transfer_new (dev);
       transfer->ssm = ssm;
       fpi_usb_transfer_fill_interrupt (transfer, USB_EP_INTERRUPT, USB_INTERRUPT_DATA_SIZE);
@@ -267,6 +305,17 @@ synaptics_cmd_run_state (FpiSsm   *ssm,
     case SYNAPTICS_CMD_RESTART:
       fpi_ssm_jump_to_state (ssm, SYNAPTICS_CMD_SEND_PENDING);
       break;
+
+    case SYNAPTICS_CMD_SUSPENDED:
+      /* The resume handler continues to the next state! */
+      fpi_device_critical_leave (dev);
+      fpi_device_suspend_complete (dev, NULL);
+      break;
+
+    case SYNAPTICS_CMD_RESUME:
+      fpi_device_critical_enter (dev);
+      fpi_ssm_jump_to_state (ssm, SYNAPTICS_CMD_WAIT_INTERRUPT);
+      break;
     }
 }
 
@@ -282,6 +331,7 @@ cmd_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   if (error || self->cmd_complete_on_removal)
     callback (self, NULL, error);
 
+  fpi_device_critical_leave (dev);
   self->cmd_complete_on_removal = FALSE;
 }
 
@@ -325,7 +375,7 @@ synaptics_sensor_cmd (FpiDeviceSynaptics *self,
    * may only be a cancellation currently). */
   if (seq_num <= 0)
     {
-      self->last_seq_num = MAX (1, self->last_seq_num + 1);
+      self->last_seq_num = MAX (1, (self->last_seq_num + 1) & 0xff);
       real_seq_num = self->last_seq_num;
       if (seq_num == 0)
         self->cmd_seq_num = self->last_seq_num;
@@ -391,6 +441,7 @@ synaptics_sensor_cmd (FpiDeviceSynaptics *self,
                                        SYNAPTICS_CMD_NUM_STATES);
           fpi_ssm_set_data (self->cmd_ssm, callback, NULL);
 
+          fpi_device_critical_enter (FP_DEVICE (self));
           fpi_ssm_start (self->cmd_ssm, cmd_ssm_done);
         }
     }
@@ -431,115 +482,35 @@ parse_print_data (GVariant      *data,
   return TRUE;
 }
 
-static void
-list_msg_cb (FpiDeviceSynaptics *self,
-             bmkt_response_t    *resp,
-             GError             *error)
+static FpPrint *
+create_print (FpiDeviceSynaptics *self,
+              guint8             *user_id,
+              guint8              finger_id)
 {
-  bmkt_enroll_templates_resp_t *get_enroll_templates_resp;
+  FpPrint *print;
+  g_autofree gchar *user_id_safe = NULL;
+  GVariant *data = NULL;
+  GVariant *uid = NULL;
 
-  if (error)
-    {
-      g_clear_pointer (&self->list_result, g_ptr_array_unref);
-      fpi_device_list_complete (FP_DEVICE (self), NULL, error);
-      return;
-    }
+  user_id_safe = g_strndup ((char *) user_id, BMKT_MAX_USER_ID_LEN);
 
-  get_enroll_templates_resp = &resp->response.enroll_templates_resp;
+  print = fp_print_new (FP_DEVICE (self));
+  uid = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
+                                   user_id_safe,
+                                   strlen (user_id_safe),
+                                   1);
+  data = g_variant_new ("(y@ay)",
+                        finger_id,
+                        uid);
 
-  switch (resp->response_id)
-    {
-    case BMKT_RSP_QUERY_FAIL:
-      if (resp->result == BMKT_FP_DATABASE_EMPTY)
-        {
-          fp_info ("Database is empty");
+  fpi_print_set_type (print, FPI_PRINT_RAW);
+  fpi_print_set_device_stored (print, TRUE);
+  g_object_set (print, "fpi-data", data, NULL);
+  g_object_set (print, "description", user_id_safe, NULL);
 
-          fpi_device_list_complete (FP_DEVICE (self),
-                                    g_steal_pointer (&self->list_result),
-                                    NULL);
-        }
-      else
-        {
-          fp_info ("Failed to query enrolled users: %d", resp->result);
-          g_clear_pointer (&self->list_result, g_ptr_array_unref);
-          fpi_device_list_complete (FP_DEVICE (self),
-                                    NULL,
-                                    fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                              "Failed to query enrolled users: %d",
-                                                              resp->result));
-        }
-      break;
+  fpi_print_fill_from_user_id (print, user_id_safe);
 
-    case BMKT_RSP_QUERY_RESPONSE_COMPLETE:
-      fp_info ("Query complete!");
-
-      fpi_device_list_complete (FP_DEVICE (self),
-                                g_steal_pointer (&self->list_result),
-                                NULL);
-
-      break;
-
-    case BMKT_RSP_TEMPLATE_RECORDS_REPORT:
-
-      for (int n = 0; n < BMKT_MAX_NUM_TEMPLATES_INTERNAL_FLASH; n++)
-        {
-          GVariant *data = NULL;
-          GVariant *uid = NULL;
-          FpPrint *print;
-          gchar *userid;
-
-          if (get_enroll_templates_resp->templates[n].user_id_len == 0)
-            continue;
-
-          fp_info ("![query %d of %d] template %d: status=0x%x, userId=%s, fingerId=%d",
-                   get_enroll_templates_resp->query_sequence,
-                   get_enroll_templates_resp->total_query_messages,
-                   n,
-                   get_enroll_templates_resp->templates[n].template_status,
-                   get_enroll_templates_resp->templates[n].user_id,
-                   get_enroll_templates_resp->templates[n].finger_id);
-
-          userid = (gchar *) get_enroll_templates_resp->templates[n].user_id;
-
-          print = fp_print_new (FP_DEVICE (self));
-          uid = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
-                                           get_enroll_templates_resp->templates[n].user_id,
-                                           get_enroll_templates_resp->templates[n].user_id_len,
-                                           1);
-          data = g_variant_new ("(y@ay)",
-                                get_enroll_templates_resp->templates[n].finger_id,
-                                uid);
-
-          fpi_print_set_type (print, FPI_PRINT_RAW);
-          fpi_print_set_device_stored (print, TRUE);
-          g_object_set (print, "fpi-data", data, NULL);
-          g_object_set (print, "description", get_enroll_templates_resp->templates[n].user_id, NULL);
-
-          fpi_print_fill_from_user_id (print, userid);
-
-          g_ptr_array_add (self->list_result, g_object_ref_sink (print));
-        }
-
-      synaptics_sensor_cmd (self,
-                            self->cmd_seq_num,
-                            BMKT_CMD_GET_NEXT_QUERY_RESPONSE,
-                            NULL,
-                            0,
-                            NULL);
-
-      break;
-    }
-}
-
-static void
-list (FpDevice *device)
-{
-  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (device);
-
-  G_DEBUG_HERE ();
-
-  self->list_result = g_ptr_array_new_with_free_func (g_object_unref);
-  synaptics_sensor_cmd (self, 0, BMKT_CMD_GET_TEMPLATE_RECORDS, NULL, 0, list_msg_cb);
+  return print;
 }
 
 static void
@@ -566,6 +537,12 @@ verify_msg_cb (FpiDeviceSynaptics *self,
   FpDevice *device = FP_DEVICE (self);
   bmkt_verify_resp_t *verify_resp;
 
+  if (self->action_starting)
+    {
+      fpi_device_critical_leave (device);
+      self->action_starting = FALSE;
+    }
+
   if (error)
     {
       fpi_device_verify_complete (device, error);
@@ -585,6 +562,9 @@ verify_msg_cb (FpiDeviceSynaptics *self,
   switch (resp->response_id)
     {
     case BMKT_RSP_VERIFY_READY:
+      fpi_device_report_finger_status_changes (device,
+                                               FP_FINGER_STATUS_NEEDED,
+                                               FP_FINGER_STATUS_NONE);
       fp_info ("Place Finger on the Sensor!");
       break;
 
@@ -626,7 +606,7 @@ verify_msg_cb (FpiDeviceSynaptics *self,
       fp_info ("Verify was successful! for user: %s finger: %d score: %f",
                verify_resp->user_id, verify_resp->finger_id, verify_resp->match_result);
       fpi_device_verify_report (device, FPI_MATCH_SUCCESS, NULL, NULL);
-      fpi_device_verify_complete (device, NULL);
+      verify_complete_after_finger_removal (self);
       break;
     }
 }
@@ -655,9 +635,242 @@ verify (FpDevice *device)
 
   G_DEBUG_HERE ();
 
+  self->action_starting = TRUE;
+  fpi_device_critical_enter (device);
   synaptics_sensor_cmd (self, 0, BMKT_CMD_VERIFY_USER, user_id, user_id_len, verify_msg_cb);
 }
 
+static void
+identify_complete_after_finger_removal (FpiDeviceSynaptics *self)
+{
+  FpDevice *device = FP_DEVICE (self);
+
+  if (self->finger_on_sensor)
+    {
+      fp_dbg ("delaying identify report until after finger removal!");
+      self->cmd_complete_on_removal = TRUE;
+    }
+  else
+    {
+      fpi_device_identify_complete (device, NULL);
+    }
+}
+
+
+static void
+identify_msg_cb (FpiDeviceSynaptics *self,
+                 bmkt_response_t    *resp,
+                 GError             *error)
+{
+  FpDevice *device = FP_DEVICE (self);
+
+  if (self->action_starting)
+    {
+      fpi_device_critical_leave (device);
+      self->action_starting = FALSE;
+    }
+
+  if (error)
+    {
+      fpi_device_identify_complete (device, error);
+      return;
+    }
+
+  if (resp == NULL && self->cmd_complete_on_removal)
+    {
+      fpi_device_identify_complete (device, NULL);
+      return;
+    }
+
+  g_assert (resp != NULL);
+
+  switch (resp->response_id)
+    {
+    case BMKT_RSP_ID_READY:
+      fp_info ("Place Finger on the Sensor!");
+      break;
+
+    case BMKT_RSP_SEND_NEXT_USER_ID:
+      {
+        compose_and_send_identify_msg (device);
+        break;
+      }
+
+    case BMKT_RSP_ID_FAIL:
+      if (resp->result == BMKT_SENSOR_STIMULUS_ERROR)
+        {
+          fp_info ("Match error occurred");
+          fpi_device_identify_report (device, NULL, NULL,
+                                      fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL));
+          identify_complete_after_finger_removal (self);
+        }
+      else if (resp->result == BMKT_FP_NO_MATCH)
+        {
+          fp_info ("Print didn't match");
+          fpi_device_identify_report (device, NULL, NULL, NULL);
+          identify_complete_after_finger_removal (self);
+        }
+      else if (resp->result == BMKT_FP_DATABASE_NO_RECORD_EXISTS)
+        {
+          fp_info ("Print is not in database");
+          fpi_device_identify_complete (device,
+                                        fpi_device_error_new (FP_DEVICE_ERROR_DATA_NOT_FOUND));
+        }
+      else
+        {
+          fp_warn ("identify has failed: %d", resp->result);
+          fpi_device_identify_complete (device,
+                                        fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                                  "Unexpected result from device %d",
+                                                                  resp->result));
+        }
+      break;
+
+    case BMKT_RSP_ID_OK:
+      {
+        FpPrint *print = NULL;
+        GPtrArray *prints = NULL;
+        g_autoptr(GVariant) data = NULL;
+        gboolean found = FALSE;
+        guint index;
+
+        print = create_print (self,
+                              resp->response.id_resp.user_id,
+                              resp->response.id_resp.finger_id);
+
+        fpi_device_get_identify_data (device, &prints);
+
+        found = g_ptr_array_find_with_equal_func (prints,
+                                                  print,
+                                                  (GEqualFunc) fp_print_equal,
+                                                  &index);
+
+        if (found)
+          fpi_device_identify_report (device, g_ptr_array_index (prints, index), print, NULL);
+        else
+          fpi_device_identify_report (device, NULL, print, NULL);
+
+        identify_complete_after_finger_removal (self);
+      }
+    }
+}
+
+static void
+identify (FpDevice *device)
+{
+  GPtrArray *prints = NULL;
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (device);
+
+  fpi_device_get_identify_data (device, &prints);
+
+  /* Identify over no prints does not work for synaptics.
+   * This *may* make sense for other devices though, as identify may return
+   * a matched print even if it is not in the list of prints.
+   */
+  if (prints->len == 0)
+    {
+      fpi_device_identify_report (device, NULL, NULL, NULL);
+      fpi_device_identify_complete (device, NULL);
+      return;
+    }
+
+  self->action_starting = TRUE;
+  fpi_device_critical_enter (device);
+
+  init_identify_msg (device);
+  compose_and_send_identify_msg (device);
+}
+
+static void
+init_identify_msg (FpDevice *device)
+{
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (device);
+
+  self->id_idx = 0;
+}
+
+static void
+compose_and_send_identify_msg (FpDevice *device)
+{
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (device);
+  FpPrint *print = NULL;
+  GPtrArray *prints = NULL;
+
+  g_autoptr(GVariant) data = NULL;
+  guint8 finger;
+  const guint8 *user_id;
+  gsize user_id_len = 0;
+  g_autofree guint8 *payload = NULL;
+  guint8 payload_len = 0;
+  guint8 payloadOffset = 0;
+
+  fpi_device_get_identify_data (device, &prints);
+  if (prints->len > UINT8_MAX)
+    {
+      fpi_device_identify_complete (device,
+                                    fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
+      return;
+    }
+  if(self->id_idx >= prints->len)
+    {
+      fp_warn ("Device asked for more prints than we are providing.");
+      fpi_device_identify_complete (device,
+                                    fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                              "Unexpected index"));
+      return;
+    }
+  print = g_ptr_array_index (prints, self->id_idx);
+  g_object_get (print, "fpi-data", &data, NULL);
+  g_debug ("data is %p", data);
+  if (!parse_print_data (data, &finger, &user_id, &user_id_len))
+    {
+      fpi_device_identify_complete (device,
+                                    fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
+      return;
+    }
+  if(self->id_idx == 0)
+    {
+      /*
+       * Construct payload.
+       * 1st byte is total number of IDs in list.
+       * 2nd byte is number of IDs in list.
+       * 1 byte for each ID length, maximum id length is 100.
+       * user_id_len bytes of each ID
+       */
+      payload_len = 2 + 1 + user_id_len;
+      payload = g_malloc0 (payload_len);
+      payload[payloadOffset] = prints->len;
+      payloadOffset += 1;
+      payload[payloadOffset] = 1; /* send one id per message */
+      payloadOffset += 1;
+      payload[payloadOffset] = user_id_len;
+      payloadOffset += 1;
+      memcpy (&payload[payloadOffset], user_id, user_id_len);
+      payloadOffset += user_id_len;
+
+      G_DEBUG_HERE ();
+
+      synaptics_sensor_cmd (self, 0, BMKT_CMD_ID_USER_IN_ORDER, payload, payloadOffset, identify_msg_cb);
+    }
+  else
+    {
+      /*
+       * 1st byte is the number of IDs
+       * 1 byte for each ID length
+       * id_length bytes for each ID
+       */
+      payload_len = 1 + 1 + user_id_len;
+      payload = g_malloc0 (payload_len);
+      payload[payloadOffset] = 1; /* send one id per message */
+      payloadOffset += 1;
+      payload[payloadOffset] = user_id_len;
+      payloadOffset += 1;
+      memcpy (&payload[payloadOffset], user_id, user_id_len);
+      payloadOffset += user_id_len;
+      synaptics_sensor_cmd (self, self->cmd_seq_num, BMKT_CMD_ID_NEXT_USER, payload, payloadOffset, NULL);
+    }
+  self->id_idx++;
+}
 static void
 enroll_msg_cb (FpiDeviceSynaptics *self,
                bmkt_response_t    *resp,
@@ -665,6 +878,12 @@ enroll_msg_cb (FpiDeviceSynaptics *self,
 {
   FpDevice *device = FP_DEVICE (self);
   bmkt_enroll_resp_t *enroll_resp;
+
+  if (self->action_starting)
+    {
+      fpi_device_critical_leave (device);
+      self->action_starting = FALSE;
+    }
 
   if (error)
     {
@@ -679,6 +898,9 @@ enroll_msg_cb (FpiDeviceSynaptics *self,
     case BMKT_RSP_ENROLL_READY:
       {
         self->enroll_stage = 0;
+        fpi_device_report_finger_status_changes (device,
+                                                 FP_FINGER_STATUS_NEEDED,
+                                                 FP_FINGER_STATUS_NONE);
         fp_info ("Place Finger on the Sensor!");
         break;
       }
@@ -809,6 +1031,9 @@ enroll (FpDevice *device)
   payload[1] = finger;
   memcpy (payload + 2, user_id, user_id_len);
 
+  self->action_starting = TRUE;
+  fpi_device_critical_enter (device);
+
   synaptics_sensor_cmd (self, 0, BMKT_CMD_ENROLL_USER, payload, user_id_len + 2, enroll_msg_cb);
 }
 
@@ -822,6 +1047,7 @@ delete_msg_cb (FpiDeviceSynaptics *self,
 
   if (error)
     {
+      fpi_device_critical_leave (device);
       fpi_device_delete_complete (device, error);
       return;
     }
@@ -836,17 +1062,24 @@ delete_msg_cb (FpiDeviceSynaptics *self,
       break;
 
     case BMKT_RSP_DEL_USER_FP_FAIL:
-      fp_info ("Failed to delete enrolled user: %d", resp->result);
-      if (resp->result == BMKT_FP_DATABASE_NO_RECORD_EXISTS)
-        fpi_device_delete_complete (device,
-                                    fpi_device_error_new (FP_DEVICE_ERROR_DATA_NOT_FOUND));
+      fpi_device_critical_leave (device);
+      if (resp->result == BMKT_FP_DATABASE_NO_RECORD_EXISTS ||
+          resp->result == BMKT_FP_DATABASE_EMPTY)
+        {
+          fp_info ("Database no record");
+          fpi_device_delete_complete (device, NULL);
+        }
       else
-        fpi_device_delete_complete (device,
-                                    fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+        {
+          fp_info ("Failed to delete enrolled user: %d", resp->result);
+          fpi_device_delete_complete (device,
+                                      fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+        }
       break;
 
     case BMKT_RSP_DEL_USER_FP_OK:
       fp_info ("Successfully deleted enrolled user");
+      fpi_device_critical_leave (device);
       fpi_device_delete_complete (device, NULL);
       break;
     }
@@ -881,7 +1114,103 @@ delete_print (FpDevice *device)
   payload[0] = finger;
   memcpy (payload + 1, user_id, user_id_len);
 
+  fpi_device_critical_enter (device);
   synaptics_sensor_cmd (self, 0, BMKT_CMD_DEL_USER_FP, payload, user_id_len + 1, delete_msg_cb);
+}
+
+static void
+clear_storage_msg_cb (FpiDeviceSynaptics *self,
+                      bmkt_response_t    *resp,
+                      GError             *error)
+{
+  FpDevice *device = FP_DEVICE (self);
+  bmkt_del_all_users_resp_t *del_all_user_resp;
+
+  if (error)
+    {
+      fpi_device_clear_storage_complete (device, error);
+      return;
+    }
+  del_all_user_resp = &resp->response.del_all_user_resp;
+
+  switch (resp->response_id)
+    {
+    case BMKT_RSP_DELETE_PROGRESS:
+      fp_info ("Deleting All Enrolled Users is %d%% complete",
+               del_all_user_resp->progress);
+      break;
+
+    case BMKT_RSP_DEL_FULL_DB_FAIL:
+      if (resp->result == BMKT_FP_DATABASE_EMPTY)
+        fpi_device_clear_storage_complete (device, NULL);
+      else
+        fpi_device_clear_storage_complete (device,
+                                           fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+      break;
+
+    case BMKT_RSP_DEL_FULL_DB_OK:
+      fp_info ("Successfully deleted all enrolled user");
+      fpi_device_clear_storage_complete (device, NULL);
+      break;
+    }
+}
+
+static void
+clear_storage (FpDevice *device)
+{
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (device);
+
+  g_debug ("clear all prints in database");
+  synaptics_sensor_cmd (self, 0, BMKT_CMD_DEL_FULL_DB, NULL, 0, clear_storage_msg_cb);
+  return;
+}
+
+
+static void
+prob_msg_cb (FpiDeviceSynaptics *self,
+             bmkt_response_t    *resp,
+             GError             *error)
+{
+  GUsbDevice *usb_dev = NULL;
+  g_autofree gchar *serial = NULL;
+  GError *err = NULL;
+
+  usb_dev = fpi_device_get_usb_device (FP_DEVICE (self));
+
+  if (error)
+    {
+      if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        err = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL, "unsupported firmware version");
+
+      g_usb_device_close (usb_dev, NULL);
+      fpi_device_probe_complete (FP_DEVICE (self), NULL, NULL, err);
+      g_clear_error (&error);
+      return;
+    }
+
+  if (g_strcmp0 (g_getenv ("FP_DEVICE_EMULATION"), "1") == 0)
+    serial = g_strdup ("emulated-device");
+  else
+    serial = g_usb_device_get_string_descriptor (usb_dev,
+                                                 g_usb_device_get_serial_number_index (usb_dev),
+                                                 &err);
+
+  /* BMKT_OPERATION_DENIED is returned if the sensor is already initialized */
+  if (resp->result == BMKT_SUCCESS || resp->result == BMKT_OPERATION_DENIED)
+    {
+      g_usb_device_close (usb_dev, NULL);
+      fpi_device_probe_complete (FP_DEVICE (self), serial, NULL, err);
+    }
+  else if (resp->result == BMKT_FP_SYSTEM_BUSY)
+    {
+      synaptics_sensor_cmd (self, self->cmd_seq_num, BMKT_CMD_CANCEL_OP, NULL, 0, NULL);
+    }
+  else
+    {
+      g_warning ("Probe fingerprint sensor failed with %d!", resp->result);
+      g_usb_device_close (usb_dev, NULL);
+      fpi_device_probe_complete (FP_DEVICE (self), serial, NULL, fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+    }
 }
 
 static void
@@ -897,6 +1226,7 @@ dev_probe (FpDevice *device)
   const guint8 *data;
   gboolean read_ok = TRUE;
   g_autofree gchar *serial = NULL;
+  gboolean retry = TRUE;
 
   G_DEBUG_HERE ();
 
@@ -908,41 +1238,46 @@ dev_probe (FpDevice *device)
       return;
     }
 
-  if (!g_usb_device_reset (usb_dev, &error))
-    goto err_close;
-
   if (!g_usb_device_claim_interface (usb_dev, 0, 0, &error))
     goto err_close;
 
-  /* TODO: Do not do this synchronous. */
-  transfer = fpi_usb_transfer_new (device);
-  fpi_usb_transfer_fill_bulk (transfer, USB_EP_REQUEST, SENSOR_FW_CMD_HEADER_LEN);
-  transfer->short_is_error = TRUE;
-  transfer->buffer[0] = SENSOR_CMD_GET_VERSION;
-  if (!fpi_usb_transfer_submit_sync (transfer, 1000, &error))
-    goto err_close;
-
-  g_clear_pointer (&transfer, fpi_usb_transfer_unref);
-  transfer = fpi_usb_transfer_new (device);
-  fpi_usb_transfer_fill_bulk (transfer, USB_EP_REPLY, 40);
-  if (!fpi_usb_transfer_submit_sync (transfer, 1000, &error))
-    goto err_close;
-
-  fpi_byte_reader_init (&reader, transfer->buffer, transfer->actual_length);
-
-  if (!fpi_byte_reader_get_uint16_le (&reader, &status))
+  while(1)
     {
-      g_warning ("Transfer in response to version query was too short");
-      error = fpi_device_error_new (FP_DEVICE_ERROR_PROTO);
-      goto err_close;
-    }
-  if (status != 0)
-    {
-      g_warning ("Device responded with error: %d", status);
-      error = fpi_device_error_new (FP_DEVICE_ERROR_PROTO);
-      goto err_close;
-    }
+      /* TODO: Do not do this synchronous. */
+      transfer = fpi_usb_transfer_new (device);
+      fpi_usb_transfer_fill_bulk (transfer, USB_EP_REQUEST, SENSOR_FW_CMD_HEADER_LEN);
+      transfer->short_is_error = TRUE;
+      transfer->buffer[0] = SENSOR_CMD_GET_VERSION;
+      if (!fpi_usb_transfer_submit_sync (transfer, 1000, &error))
+        goto err_close;
 
+      g_clear_pointer (&transfer, fpi_usb_transfer_unref);
+      transfer = fpi_usb_transfer_new (device);
+      fpi_usb_transfer_fill_bulk (transfer, USB_EP_REPLY, 40);
+      if (!fpi_usb_transfer_submit_sync (transfer, 1000, &error))
+        goto err_close;
+
+      fpi_byte_reader_init (&reader, transfer->buffer, transfer->actual_length);
+
+      if (!fpi_byte_reader_get_uint16_le (&reader, &status))
+        {
+          g_warning ("Transfer in response to version query was too short");
+          error = fpi_device_error_new (FP_DEVICE_ERROR_PROTO);
+          goto err_close;
+        }
+      if (status != 0)
+        {
+          g_warning ("Device responded with error: %d retry: %d", status, retry);
+          if(retry)
+            {
+              retry = FALSE;
+              continue;
+            }
+          error = fpi_device_error_new (FP_DEVICE_ERROR_PROTO);
+          goto err_close;
+        }
+      break;
+    }
   read_ok &= fpi_byte_reader_get_uint32_le (&reader, &self->mis_version.build_time);
   read_ok &= fpi_byte_reader_get_uint32_le (&reader, &self->mis_version.build_num);
   read_ok &= fpi_byte_reader_get_uint8 (&reader, &self->mis_version.version_major);
@@ -975,40 +1310,7 @@ dev_probe (FpDevice *device)
   fp_dbg ("Target: %d", self->mis_version.target);
   fp_dbg ("Product: %d", self->mis_version.product);
 
-
-  /* We need at least firmware version 10.1, and for 10.1 build 2989158 */
-  if (self->mis_version.version_major < 10 ||
-      self->mis_version.version_minor < 1 ||
-      (self->mis_version.version_major == 10 &&
-       self->mis_version.version_minor == 1 &&
-       self->mis_version.build_num < 2989158))
-    {
-      fp_warn ("Firmware version %d.%d with build number %d is unsupported",
-               self->mis_version.version_major,
-               self->mis_version.version_minor,
-               self->mis_version.build_num);
-
-      error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                        "Unsupported firmware version "
-                                        "(%d.%d with build number %d)",
-                                        self->mis_version.version_major,
-                                        self->mis_version.version_minor,
-                                        self->mis_version.build_num);
-      goto err_close;
-    }
-
-  /* This is the same as the serial_number from above, hex encoded and somewhat reordered */
-  /* Should we add in more, e.g. the chip revision? */
-  if (g_strcmp0 (g_getenv ("FP_DEVICE_EMULATION"), "1") == 0)
-    serial = g_strdup ("emulated-device");
-  else
-    serial = g_usb_device_get_string_descriptor (usb_dev,
-                                                 g_usb_device_get_serial_number_index (usb_dev),
-                                                 &error);
-
-  g_usb_device_close (usb_dev, NULL);
-
-  fpi_device_probe_complete (device, serial, NULL, error);
+  synaptics_sensor_cmd (self, 0, BMKT_CMD_FPS_INIT, NULL, 0, prob_msg_cb);
 
   return;
 
@@ -1024,6 +1326,9 @@ fps_init_msg_cb (FpiDeviceSynaptics *self,
 {
   if (error)
     {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        g_clear_error (&error);
+
       fpi_device_open_complete (FP_DEVICE (self), error);
       return;
     }
@@ -1032,6 +1337,10 @@ fps_init_msg_cb (FpiDeviceSynaptics *self,
   if (resp->result == BMKT_SUCCESS || resp->result == BMKT_OPERATION_DENIED)
     {
       fpi_device_open_complete (FP_DEVICE (self), NULL);
+    }
+  else if (resp->result == BMKT_FP_SYSTEM_BUSY)
+    {
+      synaptics_sensor_cmd (self, self->cmd_seq_num, BMKT_CMD_CANCEL_OP, NULL, 0, NULL);
     }
   else
     {
@@ -1045,8 +1354,12 @@ fps_deinit_cb (FpiDeviceSynaptics *self,
                bmkt_response_t    *resp,
                GError             *error)
 {
+  g_autoptr(GError) err = NULL;
+
   /* Release usb interface */
-  g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (self)), 0, 0, &error);
+  g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (self)), 0, 0, &err);
+  if (!error)
+    error = g_steal_pointer (&err);
 
   g_clear_object (&self->interrupt_cancellable);
 
@@ -1078,9 +1391,6 @@ dev_init (FpDevice *device)
   G_DEBUG_HERE ();
 
   self->interrupt_cancellable = g_cancellable_new ();
-
-  if (!g_usb_device_reset (fpi_device_get_usb_device (device), &error))
-    goto error;
 
   /* Claim usb interface */
   if (!g_usb_device_claim_interface (fpi_device_get_usb_device (device), 0, 0, &error))
@@ -1121,6 +1431,59 @@ cancel (FpDevice *dev)
 }
 
 static void
+suspend (FpDevice *dev)
+{
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (dev);
+  FpiDeviceAction action = fpi_device_get_current_action (dev);
+
+  g_debug ("got suspend request");
+
+  if (action != FPI_DEVICE_ACTION_VERIFY && action != FPI_DEVICE_ACTION_IDENTIFY)
+    {
+      fpi_device_suspend_complete (dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+      return;
+    }
+
+  /* We are guaranteed to have a cmd_ssm running at this time. */
+  g_assert (self->cmd_ssm);
+  g_assert (fpi_ssm_get_cur_state (self->cmd_ssm) == SYNAPTICS_CMD_WAIT_INTERRUPT);
+  self->cmd_suspended = TRUE;
+
+  /* Cancel the current transfer.
+   * The CMD SSM will go into the suspend state and signal readyness. */
+  g_cancellable_cancel (self->interrupt_cancellable);
+  g_clear_object (&self->interrupt_cancellable);
+  self->interrupt_cancellable = g_cancellable_new ();
+}
+
+static void
+resume (FpDevice *dev)
+{
+  FpiDeviceSynaptics *self = FPI_DEVICE_SYNAPTICS (dev);
+  FpiDeviceAction action = fpi_device_get_current_action (dev);
+
+  g_debug ("got resume request");
+
+  if (action != FPI_DEVICE_ACTION_VERIFY && action != FPI_DEVICE_ACTION_IDENTIFY)
+    {
+      g_assert_not_reached ();
+      fpi_device_resume_complete (dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+      return;
+    }
+
+  /* We must have a suspended cmd_ssm at this point */
+  g_assert (self->cmd_ssm);
+  g_assert (self->cmd_suspended);
+  g_assert (fpi_ssm_get_cur_state (self->cmd_ssm) == SYNAPTICS_CMD_SUSPENDED);
+  self->cmd_suspended = FALSE;
+
+  /* Restart interrupt transfer. */
+  fpi_ssm_jump_to_state (self->cmd_ssm, SYNAPTICS_CMD_RESUME);
+
+  fpi_device_resume_complete (dev, NULL);
+}
+
+static void
 fpi_device_synaptics_init (FpiDeviceSynaptics *self)
 {
 }
@@ -1137,13 +1500,19 @@ fpi_device_synaptics_class_init (FpiDeviceSynapticsClass *klass)
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
   dev_class->id_table = id_table;
   dev_class->nr_enroll_stages = ENROLL_SAMPLES;
+  dev_class->temp_hot_seconds = -1;
 
   dev_class->open = dev_init;
   dev_class->close = dev_exit;
   dev_class->probe = dev_probe;
   dev_class->verify = verify;
+  dev_class->identify = identify;
   dev_class->enroll = enroll;
   dev_class->delete = delete_print;
+  dev_class->clear_storage = clear_storage;
   dev_class->cancel = cancel;
-  dev_class->list = list;
+  dev_class->suspend = suspend;
+  dev_class->resume = resume;
+
+  fpi_device_class_auto_initialize_features (dev_class);
 }

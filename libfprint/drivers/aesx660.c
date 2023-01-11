@@ -54,6 +54,7 @@ static void complete_deactivation (FpImageDevice *dev);
 #define CALIBRATE_DATA_LEN 4
 #define FINGER_DET_DATA_LEN 4
 
+FP_GNUC_ACCESS (read_only, 3, 4)
 static void
 aesX660_send_cmd_timeout (FpiSsm                *ssm,
                           FpDevice              *_dev,
@@ -70,6 +71,7 @@ aesX660_send_cmd_timeout (FpiSsm                *ssm,
   fpi_usb_transfer_submit (transfer, timeout, NULL, callback, NULL);
 }
 
+FP_GNUC_ACCESS (read_only, 3, 4)
 static void
 aesX660_send_cmd (FpiSsm                *ssm,
                   FpDevice              *dev,
@@ -89,13 +91,12 @@ aesX660_read_response (FpiSsm                *ssm,
                        FpiUsbTransferCallback callback)
 {
   FpiUsbTransfer *transfer = fpi_usb_transfer_new (_dev);
-  unsigned char *data;
   GCancellable *cancel = NULL;
 
   if (cancellable)
     cancel = fpi_device_get_cancellable (_dev);
-  data = g_malloc (buf_len);
-  fpi_usb_transfer_fill_bulk_full (transfer, EP_IN, data, buf_len, NULL);
+
+  fpi_usb_transfer_fill_bulk (transfer, EP_IN, buf_len);
   transfer->ssm = ssm;
   transfer->short_is_error = short_is_error;
   fpi_usb_transfer_submit (transfer, BULK_TIMEOUT, cancel, callback, NULL);
@@ -116,7 +117,7 @@ aesX660_read_calibrate_data_cb (FpiUsbTransfer *transfer,
   /* Calibrate response was read correctly? */
   if (data[AESX660_RESPONSE_TYPE_OFFSET] != AESX660_CALIBRATE_RESPONSE)
     {
-      fp_dbg ("Bogus calibrate response: %.2x\n", data[0]);
+      fp_dbg ("Bogus calibrate response: %.2x", data[0]);
       fpi_ssm_mark_failed (transfer->ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Bogus calibrate "
@@ -155,14 +156,14 @@ finger_det_read_fd_data_cb (FpiUsbTransfer *transfer,
 
   if (error)
     {
-      fp_dbg ("Failed to read FD data\n");
+      fp_dbg ("Failed to read FD data");
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
 
   if (data[AESX660_RESPONSE_TYPE_OFFSET] != AESX660_FINGER_DET_RESPONSE)
     {
-      fp_dbg ("Bogus FD response: %.2x\n", data[0]);
+      fp_dbg ("Bogus FD response: %.2x", data[0]);
       fpi_ssm_mark_failed (transfer->ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Bogus FD response %.2x",
@@ -177,7 +178,7 @@ finger_det_read_fd_data_cb (FpiUsbTransfer *transfer,
     }
   else
     {
-      fp_dbg ("Wait for finger returned %.2x as result\n",
+      fp_dbg ("Wait for finger returned %.2x as result",
               data[AESX660_FINGER_PRESENT_OFFSET]);
       fpi_ssm_jump_to_state (transfer->ssm, FINGER_DET_SEND_FD_CMD);
     }
@@ -364,7 +365,7 @@ capture_read_stripe_data_cb (FpiUsbTransfer *transfer,
       return;
     }
 
-  fp_dbg ("Got %lu bytes of data", actual_length);
+  fp_dbg ("Got %" G_GSIZE_FORMAT " bytes of data", actual_length);
   while (actual_length)
     {
       gssize payload_length;
@@ -385,7 +386,7 @@ capture_read_stripe_data_cb (FpiUsbTransfer *transfer,
                        (priv->stripe_packet->data[AESX660_RESPONSE_SIZE_MSB_OFFSET] << 8);
       fp_dbg ("Got frame, type %.2x payload of size %.4lx",
               priv->stripe_packet->data[AESX660_RESPONSE_TYPE_OFFSET],
-              payload_length);
+              (long) payload_length);
 
       still_needed_len = MAX (0, AESX660_HEADER_SIZE + payload_length - (gssize) priv->stripe_packet->len);
       copy_len = MIN (actual_length, still_needed_len);
@@ -405,7 +406,7 @@ capture_read_stripe_data_cb (FpiUsbTransfer *transfer,
       g_byte_array_set_size (priv->stripe_packet, 0);
     }
 
-  fp_dbg ("finger %s\n", finger_missing ? "missing" : "present");
+  fp_dbg ("finger %s", finger_missing ? "missing" : "present");
 
   if (finger_missing)
     fpi_ssm_next_state (transfer->ssm);
@@ -440,7 +441,7 @@ capture_run_state (FpiSsm *ssm, FpDevice *_dev)
       break;
 
     case CAPTURE_SET_IDLE:
-      fp_dbg ("Got %lu frames\n", priv->strips_len);
+      fp_dbg ("Got %" G_GSIZE_FORMAT " frames", priv->strips_len);
       aesX660_send_cmd (ssm, _dev, set_idle_cmd, sizeof (set_idle_cmd),
                         capture_set_idle_cmd_cb);
       break;
@@ -513,19 +514,19 @@ activate_read_id_cb (FpiUsbTransfer *transfer, FpDevice *device,
 
   if (error)
     {
-      fp_dbg ("read_id cmd failed\n");
+      fp_dbg ("read_id cmd failed");
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
   /* ID was read correctly */
   if (data[0] == 0x07)
     {
-      fp_dbg ("Sensor device id: %.2x%2x, bcdDevice: %.2x.%.2x, init status: %.2x\n",
+      fp_dbg ("Sensor device id: %.2x%2x, bcdDevice: %.2x.%.2x, init status: %.2x",
               data[4], data[3], data[5], data[6], data[7]);
     }
   else
     {
-      fp_dbg ("Bogus read ID response: %.2x\n", data[AESX660_RESPONSE_TYPE_OFFSET]);
+      fp_dbg ("Bogus read ID response: %.2x", data[AESX660_RESPONSE_TYPE_OFFSET]);
       fpi_ssm_mark_failed (transfer->ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Bogus read ID response %.2x",
@@ -553,7 +554,7 @@ activate_read_id_cb (FpiUsbTransfer *transfer, FpDevice *device,
       break;
 
     default:
-      fp_dbg ("Failed to init device! init status: %.2x\n", data[7]);
+      fp_dbg ("Failed to init device! init status: %.2x", data[7]);
       fpi_ssm_mark_failed (transfer->ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Failed to init device %.2x",
@@ -570,11 +571,11 @@ activate_read_init_cb (FpiUsbTransfer *transfer, FpDevice *device,
   FpiDeviceAesX660Private *priv = fpi_device_aes_x660_get_instance_private (self);
   unsigned char *data = transfer->buffer;
 
-  fp_dbg ("read_init_cb\n");
+  fp_dbg ("read_init_cb");
 
   if (error)
     {
-      fp_dbg ("read_init transfer status: %s, actual_len: %d\n", error->message,
+      fp_dbg ("read_init transfer status: %s, actual_len: %d", error->message,
               (gint) transfer->actual_length);
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
@@ -582,7 +583,7 @@ activate_read_init_cb (FpiUsbTransfer *transfer, FpDevice *device,
   /* ID was read correctly */
   if (data[0] != 0x42 || data[3] != 0x01)
     {
-      fp_dbg ("Bogus read init response: %.2x %.2x\n", data[0],
+      fp_dbg ("Bogus read init response: %.2x %.2x", data[0],
               data[3]);
       fpi_ssm_mark_failed (transfer->ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -614,13 +615,13 @@ activate_run_state (FpiSsm *ssm, FpDevice *_dev)
     {
     case ACTIVATE_SET_IDLE:
       priv->init_seq_idx = 0;
-      fp_dbg ("Activate: set idle\n");
+      fp_dbg ("Activate: set idle");
       aesX660_send_cmd (ssm, _dev, set_idle_cmd, sizeof (set_idle_cmd),
                         fpi_ssm_usb_transfer_cb);
       break;
 
     case ACTIVATE_SEND_READ_ID_CMD:
-      fp_dbg ("Activate: read ID\n");
+      fp_dbg ("Activate: read ID");
       aesX660_send_cmd (ssm, _dev, read_id_cmd, sizeof (read_id_cmd),
                         fpi_ssm_usb_transfer_cb);
       break;
@@ -630,7 +631,7 @@ activate_run_state (FpiSsm *ssm, FpDevice *_dev)
       break;
 
     case ACTIVATE_SEND_INIT_CMD:
-      fp_dbg ("Activate: send init seq #%d cmd #%d\n",
+      fp_dbg ("Activate: send init seq #%d cmd #%d",
               priv->init_seq_idx,
               priv->init_cmd_idx);
       aesX660_send_cmd (ssm, _dev,
@@ -640,7 +641,7 @@ activate_run_state (FpiSsm *ssm, FpDevice *_dev)
       break;
 
     case ACTIVATE_READ_INIT_RESPONSE:
-      fp_dbg ("Activate: read init response\n");
+      fp_dbg ("Activate: read init response");
       aesX660_read_response (ssm, _dev, TRUE, FALSE, INIT_LEN, activate_read_init_cb);
       break;
 

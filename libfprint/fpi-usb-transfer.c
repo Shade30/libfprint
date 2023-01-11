@@ -105,6 +105,7 @@ fpi_usb_transfer_new (FpDevice * device)
 
   self = g_slice_new0 (FpiUsbTransfer);
   self->ref_count = 1;
+  self->type = FP_TRANSFER_NONE;
 
   self->device = device;
 
@@ -186,7 +187,7 @@ fpi_usb_transfer_fill_bulk (FpiUsbTransfer *transfer,
  * fpi_usb_transfer_fill_bulk_full:
  * @transfer: The #FpiUsbTransfer
  * @endpoint: The endpoint to send the transfer to
- * @buffer: The data to send. A buffer will be created and managed for you if you pass NULL.
+ * @buffer: The data to send.
  * @length: The size of @buffer
  * @free_func: (destroy buffer): Destroy notify for @buffer
  *
@@ -274,7 +275,7 @@ fpi_usb_transfer_fill_interrupt (FpiUsbTransfer *transfer,
  * fpi_usb_transfer_fill_interrupt_full:
  * @transfer: The #FpiUsbTransfer
  * @endpoint: The endpoint to send the transfer to
- * @buffer: The data to send. A buffer will be created and managed for you if you pass NULL.
+ * @buffer: The data to send.
  * @length: The size of @buffer
  * @free_func: (destroy buffer): Destroy notify for @buffer
  *
@@ -353,6 +354,23 @@ transfer_finish_cb (GObject *source_object, GAsyncResult *res, gpointer user_dat
   fpi_usb_transfer_unref (transfer);
 }
 
+static void
+transfer_cancel_cb (FpDevice *device, gpointer user_data)
+{
+  FpiUsbTransfer *transfer = user_data;
+  GError *error;
+  FpiUsbTransferCallback callback;
+
+  error = g_error_new_literal (G_IO_ERROR,
+                               G_IO_ERROR_CANCELLED,
+                               "Transfer was cancelled before being started");
+  callback = transfer->callback;
+  transfer->callback = NULL;
+  transfer->actual_length = -1;
+  callback (transfer, transfer->device, transfer->user_data, error);
+
+  fpi_usb_transfer_unref (transfer);
+}
 
 /**
  * fpi_usb_transfer_submit:
@@ -385,6 +403,19 @@ fpi_usb_transfer_submit (FpiUsbTransfer        *transfer,
   transfer->user_data = user_data;
 
   log_transfer (transfer, TRUE, NULL);
+
+  /* Work around libgusb cancellation issue, see
+   *   https://github.com/hughsie/libgusb/pull/42
+   * should be fixed with libgusb 0.3.7.
+   * Note that this is not race free, we rely on libfprint and API users
+   * not cancelling from a different thread here.
+   */
+  if (cancellable && g_cancellable_is_cancelled (cancellable))
+    {
+      fpi_device_add_timeout (transfer->device, 0,
+                              transfer_cancel_cb, transfer, NULL);
+      return;
+    }
 
   switch (transfer->type)
     {

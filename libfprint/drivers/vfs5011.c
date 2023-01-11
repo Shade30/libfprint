@@ -196,6 +196,7 @@ usb_exchange_async (FpiSsm                  *ssm,
   FpiSsm *subsm = fpi_ssm_new_full (FP_DEVICE (data->device),
                                     usbexchange_loop,
                                     data->stepcount,
+                                    data->stepcount,
                                     exchange_name);
 
   fpi_ssm_set_data (subsm, data, NULL);
@@ -705,7 +706,7 @@ activate_loop (FpiSsm *ssm, FpDevice *_dev)
       break;
 
     case DEV_ACTIVATE_DATA_COMPLETE:
-      fpi_ssm_next_state_delayed (ssm, 1, NULL);
+      fpi_ssm_next_state_delayed (ssm, 1);
       break;
 
     case DEV_ACTIVATE_PREPARE_NEXT_CAPTURE:
@@ -815,13 +816,11 @@ dev_close (FpImageDevice *dev)
   GError *error = NULL;
   FpDeviceVfs5011 *self = FPI_DEVICE_VFS5011 (dev);
 
-  ;
-
   g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (dev)),
                                   0, 0, &error);
 
   g_free (self->capture_buffer);
-  g_slist_free_full (self->rows, g_free);
+  g_slist_free_full (g_steal_pointer (&self->rows), g_free);
 
   fpi_image_device_close_complete (dev, error);
 }

@@ -2,7 +2,7 @@
  * Copyright (C) 2009 Red Hat <mjg@redhat.com>
  * Copyright (C) 2008 Bastien Nocera <hadess@hadess.net>
  * Copyright (C) 2008 Timo Hoenig <thoenig@suse.de>, <thoenig@nouse.net>
- * Copyright (C) 2019 Benjamin Berg <bberg@redhat.com>
+ * Coypright (C) 2019 Benjamin Berg <bberg@redhat.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -24,27 +24,6 @@
 #include "fpi-context.h"
 #include "fpi-device.h"
 
-static const FpIdEntry whitelist_id_table[] = {
-  /* Unsupported (for now) Validity Sensors finger print readers */
-  { .vid = 0x138a, .pid = 0x0091 },
-  { .vid = 0x138a, .pid = 0x0094 },
-  { .vid = 0x138a, .pid = 0x0097 },   /* Found on e.g. Lenovo T470s */
-  { .vid = 0 },
-};
-
-static const FpIdEntry blacklist_id_table[] = {
-  { .vid = 0x0483, .pid = 0x2016 },
-  /* https://bugs.freedesktop.org/show_bug.cgi?id=66659 */
-  { .vid = 0x045e, .pid = 0x00bb },
-  { .vid = 0 },
-};
-
-static const FpDeviceClass whitelist = {
-  .type = FP_DEVICE_TYPE_USB,
-  .id_table = whitelist_id_table,
-  .full_name = "Hardcoded whitelist"
-};
-
 GHashTable *printed = NULL;
 
 static void
@@ -53,38 +32,25 @@ print_driver (const FpDeviceClass *cls)
   const FpIdEntry *entry;
   gint num_printed = 0;
 
-  if (cls->type != FP_DEVICE_TYPE_USB)
+  if (cls->type != FP_DEVICE_TYPE_UDEV)
     return;
 
-  for (entry = cls->id_table; entry->vid != 0; entry++)
+  for (entry = cls->id_table; entry->udev_types != 0; entry++)
     {
-      const FpIdEntry *bl_entry;
-      char *key;
-
-      for (bl_entry = blacklist_id_table; bl_entry->vid != 0; bl_entry++)
-        if (entry->vid == bl_entry->vid && entry->pid == bl_entry->pid)
-          break;
-
-      if (bl_entry->vid != 0)
+      /* We only add rules for spidev right now. */
+      if ((entry->udev_types & FPI_DEVICE_UDEV_SUBTYPE_SPIDEV) == 0)
         continue;
 
-      key = g_strdup_printf ("%04x:%04x", entry->vid, entry->pid);
+      if (g_hash_table_lookup (printed, entry->spi_acpi_id) != NULL)
+        continue;
 
-      if (g_hash_table_lookup (printed, key) != NULL)
-        {
-          g_free (key);
-          continue;
-        }
-
-      g_hash_table_insert (printed, key, GINT_TO_POINTER (1));
+      g_hash_table_insert (printed, g_strdup (entry->spi_acpi_id), GINT_TO_POINTER (1));
 
       if (num_printed == 0)
         g_print ("# %s\n", cls->full_name);
 
-      g_print ("SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"%04x\", ATTRS{idProduct}==\"%04x\", ATTRS{dev}==\"*\", TEST==\"power/control\", ATTR{power/control}=\"auto\"\n",
-               entry->vid, entry->pid);
-      g_print ("SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"%04x\", ATTRS{idProduct}==\"%04x\", ENV{LIBFPRINT_DRIVER}=\"%s\"\n",
-               entry->vid, entry->pid, cls->full_name);
+      g_print ("ACTION==\"add|change\", SUBSYSTEM==\"spi\", ENV{MODALIAS}==\"acpi:%s:\", RUN{builtin}+=\"kmod load spi:spidev\", RUN+=\"/bin/sh -c 'echo spidev > %%S%%p/driver_override && echo %%k > %%S%%p/subsystem/drivers/spidev/bind'\"\n",
+               entry->spi_acpi_id);
       num_printed++;
     }
 
@@ -100,18 +66,26 @@ main (int argc, char **argv)
 
   printed = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
 
+  g_print ("# This file is part of libfprint\n");
+  g_print ("# Do not modify this file, it will get overwritten on updates.\n");
+  g_print ("# To override or extend the rules place a file in /etc/udev/rules.d\n");
+  g_print ("\n");
+
   for (i = 0; i < drivers->len; i++)
     {
       GType driver = g_array_index (drivers, GType, i);
-      g_autoptr(FpDeviceClass) cls = g_type_class_ref (driver);
+      FpDeviceClass *cls = FP_DEVICE_CLASS (g_type_class_ref (driver));
 
-      if (cls->type != FP_DEVICE_TYPE_USB)
-        continue;
+      if (cls->type != FP_DEVICE_TYPE_UDEV)
+        {
+          g_type_class_unref (cls);
+          continue;
+        }
 
       print_driver (cls);
-    }
 
-  print_driver (&whitelist);
+      g_type_class_unref (cls);
+    }
 
   g_hash_table_destroy (printed);
 

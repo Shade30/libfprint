@@ -93,6 +93,7 @@ usb_recv (FpDeviceVfs301 *dev, guint8 endpoint, int max_bytes, FpiUsbTransfer **
     *out = g_steal_pointer (&transfer);
 }
 
+FP_GNUC_ACCESS (read_only, 2, 3)
 static void
 usb_send (FpDeviceVfs301 *dev, const guint8 *data, gssize length, GError **error)
 {
@@ -212,11 +213,9 @@ vfs301_proto_generate (int type, int subtype, gssize *len)
         *len = 1;
         return data;
       }
-      break;
 
     case 0x0B:
       return vfs301_proto_generate_0B (subtype, len);
-      break;
 
     case 0x02D0:
       {
@@ -232,22 +231,18 @@ vfs301_proto_generate (int type, int subtype, gssize *len)
         g_assert ((int) subtype <= G_N_ELEMENTS (dataLs));
         return translate_str (dataLs[subtype - 1], len);
       }
-      break;
 
     case 0x0220:
       switch (subtype)
         {
         case 1:
           return translate_str (vfs301_0220_01, len);
-          break;
 
         case 2:
           return translate_str (vfs301_0220_02, len);
-          break;
 
         case 3:
           return translate_str (vfs301_0220_03, len);
-          break;
 
         case 0xFA00:
         case 0x2C01:
@@ -270,7 +265,6 @@ vfs301_proto_generate (int type, int subtype, gssize *len)
             field[3] = field[1];
 
             return data;
-            break;
           }
 
         default:
@@ -438,7 +432,7 @@ img_process_data (int first_block, FpDeviceVfs301 *dev, const guint8 *buf, int l
     usb_send (dev, data, len, NULL); \
   }
 
-#define RAW_DATA(x) g_memdup (x, sizeof (x)), sizeof (x)
+#define RAW_DATA(x) g_memdup2 (x, sizeof (x)), sizeof (x)
 
 #define IS_VFS301_FP_SEQ_START(b) ((b[0] == 0x01) && (b[1] == 0xfe))
 
@@ -471,7 +465,7 @@ int
 vfs301_proto_peek_event (FpDeviceVfs301 *dev)
 {
   g_autoptr(GError) error = NULL;
-  FpiUsbTransfer *transfer;
+  g_autoptr(FpiUsbTransfer) transfer = NULL;
 
   const char no_event[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   const char got_event[] = {0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00};
@@ -508,30 +502,30 @@ vfs301_proto_process_event_cb (FpiUsbTransfer *transfer,
                                FpDevice *device,
                                gpointer user_data, GError *error)
 {
-  FpDeviceVfs301 *dev = user_data;
+  FpDeviceVfs301 *self = FPI_DEVICE_VFS301 (device);
 
   if (error)
     {
       g_warning ("Error receiving data: %s", error->message);
       g_error_free (error);
-      dev->recv_progress = VFS301_FAILURE;
+      self->recv_progress = VFS301_FAILURE;
       return;
     }
   else if (transfer->actual_length < transfer->length)
     {
       /* TODO: process the data anyway? */
-      dev->recv_progress = VFS301_ENDED;
+      self->recv_progress = VFS301_ENDED;
       return;
     }
   else
     {
       FpiUsbTransfer *new;
-      if (!vfs301_proto_process_data (dev,
+      if (!vfs301_proto_process_data (self,
                                       transfer->length == VFS301_FP_RECV_LEN_1,
                                       transfer->buffer,
                                       transfer->actual_length))
         {
-          dev->recv_progress = VFS301_ENDED;
+          self->recv_progress = VFS301_ENDED;
           return;
         }
 

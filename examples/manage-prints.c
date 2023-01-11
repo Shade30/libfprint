@@ -54,7 +54,7 @@ on_device_closed (FpDevice     *dev,
   fp_device_close_finish (dev, res, &error);
 
   if (error)
-    g_warning ("Failed closing device %s\n", error->message);
+    g_warning ("Failed closing device %s", error->message);
 
   g_main_loop_quit (list_data->loop);
 }
@@ -86,7 +86,7 @@ delete_next_print (FpDevice *dev,
   g_assert_nonnull (list_data->to_delete);
   print = list_data->to_delete->data;
 
-  g_debug ("Deleting print %s\n", fp_print_get_description (print));
+  g_debug ("Deleting print %s", fp_print_get_description (print));
   fp_device_delete_print (dev, print, NULL,
                           (GAsyncReadyCallback) on_print_deleted, list_data);
 }
@@ -161,7 +161,7 @@ on_list_completed (FpDevice     *dev,
                    finger_to_string (fp_print_get_finger (print)),
                    fp_print_get_username (print));
 
-          if (date)
+          if (date && g_date_valid (date))
             {
               g_date_strftime (buf, G_N_ELEMENTS (buf), "%Y-%m-%d\0", date);
               g_print (", enrolled on %s", buf);
@@ -231,7 +231,7 @@ on_device_opened (FpDevice     *dev,
       return;
     }
 
-  if (!fp_device_has_storage (dev))
+  if (!fp_device_has_feature (dev, FP_DEVICE_FEATURE_STORAGE))
     {
       g_warning ("Device %s doesn't support storage", fp_device_get_name (dev));
       g_main_loop_quit (list_data->loop);

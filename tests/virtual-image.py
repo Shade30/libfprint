@@ -21,13 +21,8 @@ except Exception as e:
 
 FPrint = None
 
-# Re-run the test with the passed wrapper if set
-wrapper = os.getenv('LIBFPRINT_TEST_WRAPPER')
-if wrapper:
-    wrap_cmd = wrapper.split(' ') + [sys.executable, os.path.abspath(__file__)] + \
-        sys.argv[1:]
-    os.unsetenv('LIBFPRINT_TEST_WRAPPER')
-    sys.exit(subprocess.check_call(wrap_cmd))
+# Exit with error on any exception, included those happening in async callbacks
+sys.excepthook = lambda *args: (traceback.print_exception(*args), sys.exit(1))
 
 def load_image(img):
     png = cairo.ImageSurface.create_from_png(img)
@@ -140,6 +135,22 @@ class VirtualImage(unittest.TestCase):
         while iterate and ctx.pending():
             ctx.iteration(False)
 
+    def test_features(self):
+        self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.CAPTURE))
+        self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.IDENTIFY))
+        self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.VERIFY))
+        self.assertTrue(self.dev.has_feature(FPrint.DeviceFeature.UPDATE_PRINT))
+        self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.DUPLICATES_CHECK))
+        self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.STORAGE))
+        self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.STORAGE_LIST))
+        self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.STORAGE_DELETE))
+        self.assertFalse(self.dev.has_feature(FPrint.DeviceFeature.STORAGE_CLEAR))
+        self.assertEqual(self.dev.get_features(),
+                         FPrint.DeviceFeature.CAPTURE |
+                         FPrint.DeviceFeature.IDENTIFY |
+                         FPrint.DeviceFeature.VERIFY |
+                         FPrint.DeviceFeature.UPDATE_PRINT)
+
     def test_capture_prevents_close(self):
         cancel = Gio.Cancellable()
         def cancelled_cb(dev, res, obj):
@@ -161,7 +172,7 @@ class VirtualImage(unittest.TestCase):
         while not self._cancelled:
             ctx.iteration(True)
 
-    def enroll_print(self, image):
+    def enroll_print(self, image, template=None):
         self._step = 0
         self._enrolled = None
 
@@ -172,16 +183,19 @@ class VirtualImage(unittest.TestCase):
         def done_cb(dev, res):
             print("Enroll done")
             fp = dev.enroll_finish(res)
+            self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NONE)
             self._enrolled = fp
 
-        template = FPrint.Print.new(self.dev)
-        template.props.finger = FPrint.Finger.LEFT_THUMB
-        template.props.username = "testuser"
-        template.props.description = "test print"
-        datetime = GLib.DateTime.new_now_local()
-        date = GLib.Date()
-        date.set_dmy(*datetime.get_ymd()[::-1])
-        template.props.enroll_date = date
+        if template is None:
+            template = FPrint.Print.new(self.dev)
+            template.props.finger = FPrint.Finger.LEFT_THUMB
+            template.props.username = "testuser"
+            template.props.description = "test print"
+            datetime = GLib.DateTime.new_now_local()
+            date = GLib.Date()
+            date.set_dmy(*datetime.get_ymd()[::-1])
+            template.props.enroll_date = date
+        self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NONE)
         self.dev.enroll(template, None, progress_cb, tuple(), done_cb)
 
         # Note: Assumes 5 enroll steps for this device!
@@ -192,24 +206,40 @@ class VirtualImage(unittest.TestCase):
         # Test the image-device path where the finger is removed after
         # the minutiae scan is completed.
         self.send_finger_automatic(False)
+        self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
         self.send_finger_report(True)
+        self.assertEqual(self.dev.get_finger_status(),
+            FPrint.FingerStatusFlags.NEEDED | FPrint.FingerStatusFlags.PRESENT)
         self.send_image(image)
         while self._step < 2:
             ctx.iteration(True)
         self.send_finger_report(False)
+
+        self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
 
         self.send_finger_automatic(True)
         self.send_image(image)
         while self._step < 3:
             ctx.iteration(True)
 
+        self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
+
         self.send_image(image)
         while self._step < 4:
             ctx.iteration(True)
 
+        self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NEEDED)
+
         self.send_image(image)
         while self._enrolled is None:
             ctx.iteration(True)
+
+        self.assertEqual(self.dev.get_finger_status(), FPrint.FingerStatusFlags.NONE)
+        self.assertEqual(self._enrolled.props.driver, self.dev.get_driver())
+        self.assertEqual(self._enrolled.props.device_id, self.dev.get_device_id())
+        self.assertEqual(self._enrolled.props.device_stored,
+                         bool(self.dev.get_features() & FPrint.DeviceFeature.STORAGE))
+        self.assertIsNone(self._enrolled.get_image())
 
         return self._enrolled
 
@@ -231,6 +261,7 @@ class VirtualImage(unittest.TestCase):
         while self._verify_match is None:
             ctx.iteration(True)
         assert(self._verify_match)
+        self.assertIsNotNone(self._verify_fp.props.image)
 
         self._verify_match = None
         self._verify_fp = None
@@ -239,6 +270,28 @@ class VirtualImage(unittest.TestCase):
         while self._verify_match is None:
             ctx.iteration(True)
         assert(not self._verify_match)
+
+        # Test fingerprint updates
+        # Enroll a second print
+        fp_whorl_tended_arch = self.enroll_print('tented_arch', fp_whorl)
+
+        # Make sure the first print verifies successfully after the update
+        self._verify_match = None
+        self._verify_fp = None
+        self.dev.verify(fp_whorl_tended_arch, callback=verify_cb)
+        self.send_image('whorl')
+        while self._verify_match is None:
+            ctx.iteration(True)
+        assert(self._verify_match)
+
+        # Make sure the second print verifies successfully after the update
+        self._verify_match = None
+        self._verify_fp = None
+        self.dev.verify(fp_whorl_tended_arch, callback=verify_cb)
+        self.send_image('tented_arch')
+        while self._verify_match is None:
+            ctx.iteration(True)
+        assert(self._verify_match)
 
         # Test verify error cases
         self._verify_fp = None

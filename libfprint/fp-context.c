@@ -23,6 +23,13 @@
 #include "fpi-context.h"
 #include "fpi-device.h"
 #include <gusb.h>
+#include <stdio.h>
+
+#include <config.h>
+
+#ifdef HAVE_UDEV
+#include <gudev/gudev.h>
+#endif
 
 /**
  * SECTION: fp-context
@@ -40,6 +47,8 @@ typedef struct
 {
   GUsbContext  *usb_ctx;
   GCancellable *cancellable;
+
+  GSList       *sources;
 
   gint          pending_devices;
   gboolean      enumerated;
@@ -86,6 +95,83 @@ is_driver_allowed (const gchar *driver)
   return FALSE;
 }
 
+typedef struct
+{
+  FpContext *context;
+  FpDevice  *device;
+  GSource   *source;
+} RemoveDeviceData;
+
+static gboolean
+remove_device_idle_cb (RemoveDeviceData *data)
+{
+  FpContextPrivate *priv = fp_context_get_instance_private (data->context);
+  guint idx = 0;
+
+  g_return_val_if_fail (g_ptr_array_find (priv->devices, data->device, &idx), G_SOURCE_REMOVE);
+
+  g_signal_emit (data->context, signals[DEVICE_REMOVED_SIGNAL], 0, data->device);
+  g_ptr_array_remove_index_fast (priv->devices, idx);
+
+  return G_SOURCE_REMOVE;
+}
+
+static void
+remove_device_data_free (RemoveDeviceData *data)
+{
+  FpContextPrivate *priv = fp_context_get_instance_private (data->context);
+
+  priv->sources = g_slist_remove (priv->sources, data->source);
+  g_free (data);
+}
+
+static void
+remove_device (FpContext *context, FpDevice *device)
+{
+  g_autoptr(GSource) source = NULL;
+  FpContextPrivate *priv = fp_context_get_instance_private (context);
+  RemoveDeviceData *data;
+
+  data = g_new (RemoveDeviceData, 1);
+  data->context = context;
+  data->device = device;
+
+  source = data->source = g_idle_source_new ();
+  g_source_set_callback (source,
+                         G_SOURCE_FUNC (remove_device_idle_cb), data,
+                         (GDestroyNotify) remove_device_data_free);
+  g_source_attach (source, g_main_context_get_thread_default ());
+
+  priv->sources = g_slist_prepend (priv->sources, source);
+}
+
+static void
+device_remove_on_notify_open_cb (FpContext *context, GParamSpec *pspec, FpDevice *device)
+{
+  remove_device (context, device);
+}
+
+static void
+device_removed_cb (FpContext *context, FpDevice *device)
+{
+  gboolean open = FALSE;
+
+  g_object_get (device, "open", &open, NULL);
+
+  /* Wait for device close if the device is currently still open. */
+  if (open)
+    {
+      g_signal_connect_object (device, "notify::open",
+                               (GCallback) device_remove_on_notify_open_cb,
+                               context,
+                               G_CONNECT_SWAPPED);
+    }
+  else
+    {
+      remove_device (context, device);
+    }
+}
+
 static void
 async_device_init_done_cb (GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
@@ -110,6 +196,12 @@ async_device_init_done_cb (GObject *source_object, GAsyncResult *res, gpointer u
     }
 
   g_ptr_array_add (priv->devices, device);
+
+  g_signal_connect_object (device, "removed",
+                           (GCallback) device_removed_cb,
+                           context,
+                           G_CONNECT_SWAPPED);
+
   g_signal_emit (context, signals[DEVICE_ADDED_SIGNAL], 0, device);
 }
 
@@ -189,12 +281,7 @@ usb_device_removed_cb (FpContext *self, GUsbDevice *device, GUsbContext *usb_ctx
         continue;
 
       if (fpi_device_get_usb_device (dev) == device)
-        {
-          g_signal_emit (self, signals[DEVICE_REMOVED_SIGNAL], 0, dev);
-          g_ptr_array_remove_index_fast (priv->devices, i);
-
-          return;
-        }
+        fpi_device_remove (dev);
     }
 }
 
@@ -204,13 +291,15 @@ fp_context_finalize (GObject *object)
   FpContext *self = (FpContext *) object;
   FpContextPrivate *priv = fp_context_get_instance_private (self);
 
-  g_clear_pointer (&priv->devices, g_ptr_array_unref);
-
   g_cancellable_cancel (priv->cancellable);
   g_clear_object (&priv->cancellable);
   g_clear_pointer (&priv->drivers, g_array_unref);
+  g_clear_pointer (&priv->devices, g_ptr_array_unref);
 
-  g_object_run_dispose (G_OBJECT (priv->usb_ctx));
+  g_slist_free_full (g_steal_pointer (&priv->sources), (GDestroyNotify) g_source_destroy);
+
+  if (priv->usb_ctx)
+    g_object_run_dispose (G_OBJECT (priv->usb_ctx));
   g_clear_object (&priv->usb_ctx);
 
   G_OBJECT_CLASS (fp_context_parent_class)->finalize (object);
@@ -247,6 +336,10 @@ fp_context_class_init (FpContextClass *klass)
    * @device: A #FpDevice
    *
    * This signal is emitted when a fingerprint reader is removed.
+   *
+   * It is guaranteed that the device has been closed before this signal
+   * is emitted. See the #FpDevice removed signal documentation for more
+   * information.
    **/
   signals[DEVICE_REMOVED_SIGNAL] = g_signal_new ("device-removed",
                                                  G_TYPE_FROM_CLASS (klass),
@@ -266,6 +359,8 @@ fp_context_init (FpContext *self)
   g_autoptr(GError) error = NULL;
   FpContextPrivate *priv = fp_context_get_instance_private (self);
   guint i;
+
+  g_debug ("Initializing FpContext (libfprint version " LIBFPRINT_VERSION ")");
 
   priv->drivers = fpi_get_driver_types ();
 
@@ -289,7 +384,7 @@ fp_context_init (FpContext *self)
   priv->usb_ctx = g_usb_context_new (&error);
   if (!priv->usb_ctx)
     {
-      fp_warn ("Could not initialise USB Subsystem: %s", error->message);
+      g_message ("Could not initialise USB Subsystem: %s", error->message);
     }
   else
     {
@@ -332,6 +427,7 @@ void
 fp_context_enumerate (FpContext *context)
 {
   FpContextPrivate *priv = fp_context_get_instance_private (context);
+  gboolean dispatched;
   gint i;
 
   g_return_if_fail (FP_IS_CONTEXT (context));
@@ -342,7 +438,8 @@ fp_context_enumerate (FpContext *context)
   priv->enumerated = TRUE;
 
   /* USB devices are handled from callbacks */
-  g_usb_context_enumerate (priv->usb_ctx);
+  if (priv->usb_ctx)
+    g_usb_context_enumerate (priv->usb_ctx);
 
   /* Handle Virtual devices based on environment variables */
   for (i = 0; i < priv->drivers->len; i++)
@@ -376,8 +473,112 @@ fp_context_enumerate (FpContext *context)
         }
     }
 
-  while (priv->pending_devices)
-    g_main_context_iteration (NULL, TRUE);
+
+#ifdef HAVE_UDEV
+  {
+    g_autoptr(GUdevClient) udev_client = g_udev_client_new (NULL);
+
+    /* This uses a very simple algorithm to allocate devices to drivers and assumes that no two drivers will want the same device. Future improvements
+     * could add a usb_discover style udev_discover that returns a score, however for internal devices the potential overlap should be very low between
+     * separate drivers.
+     */
+
+    g_autoptr(GList) spidev_devices = g_udev_client_query_by_subsystem (udev_client, "spidev");
+    g_autoptr(GList) hidraw_devices = g_udev_client_query_by_subsystem (udev_client, "hidraw");
+
+    /* for each potential driver, try to match all requested resources. */
+    for (i = 0; i < priv->drivers->len; i++)
+      {
+        GType driver = g_array_index (priv->drivers, GType, i);
+        g_autoptr(FpDeviceClass) cls = g_type_class_ref (driver);
+        const FpIdEntry *entry;
+
+        if (cls->type != FP_DEVICE_TYPE_UDEV)
+          continue;
+
+        for (entry = cls->id_table; entry->udev_types; entry++)
+          {
+            GList *matched_spidev = NULL, *matched_hidraw = NULL;
+
+            if (entry->udev_types & FPI_DEVICE_UDEV_SUBTYPE_SPIDEV)
+              {
+                for (matched_spidev = spidev_devices; matched_spidev; matched_spidev = matched_spidev->next)
+                  {
+                    const gchar * sysfs = g_udev_device_get_sysfs_path (matched_spidev->data);
+                    if (!sysfs)
+                      continue;
+                    if (strstr (sysfs, entry->spi_acpi_id))
+                      break;
+                  }
+                /* If match was not found exit */
+                if (matched_spidev == NULL)
+                  continue;
+              }
+            if (entry->udev_types & FPI_DEVICE_UDEV_SUBTYPE_HIDRAW)
+              {
+                for (matched_hidraw = hidraw_devices; matched_hidraw; matched_hidraw = matched_hidraw->next)
+                  {
+                    /* Find the parent HID node, and check the vid/pid from its HID_ID property */
+                    g_autoptr(GUdevDevice) parent = g_udev_device_get_parent_with_subsystem (matched_hidraw->data, "hid", NULL);
+                    const gchar * hid_id = g_udev_device_get_property (parent, "HID_ID");
+                    guint32 vendor, product;
+
+                    if (!parent || !hid_id)
+                      continue;
+
+                    if (sscanf (hid_id, "%*X:%X:%X", &vendor, &product) != 2)
+                      continue;
+
+                    if (vendor == entry->hid_id.vid && product == entry->hid_id.pid)
+                      break;
+                  }
+                /* If match was not found exit */
+                if (matched_hidraw == NULL)
+                  continue;
+              }
+            priv->pending_devices++;
+            g_async_initable_new_async (driver,
+                                        G_PRIORITY_LOW,
+                                        priv->cancellable,
+                                        async_device_init_done_cb,
+                                        context,
+                                        "fpi-driver-data", entry->driver_data,
+                                        "fpi-udev-data-spidev", (matched_spidev ? g_udev_device_get_device_file (matched_spidev->data) : NULL),
+                                        "fpi-udev-data-hidraw", (matched_hidraw ? g_udev_device_get_device_file (matched_hidraw->data) : NULL),
+                                        NULL);
+            /* remove entries from list to avoid conflicts */
+            if (matched_spidev)
+              {
+                g_object_unref (matched_spidev->data);
+                spidev_devices = g_list_delete_link (spidev_devices, matched_spidev);
+              }
+            if (matched_hidraw)
+              {
+                g_object_unref (matched_hidraw->data);
+                hidraw_devices = g_list_delete_link (hidraw_devices, matched_hidraw);
+              }
+          }
+      }
+
+    /* free all unused elemnts in both lists */
+    g_list_foreach (spidev_devices, (GFunc) g_object_unref, NULL);
+    g_list_foreach (hidraw_devices, (GFunc) g_object_unref, NULL);
+  }
+#endif
+
+  /* Iterate until 1. we have no pending devices, and 2. the mainloop is idle
+   * This takes care of processing hotplug events that happened during
+   * enumeration.
+   * This is important due to USB `persist` being turned off. At resume time,
+   * devices will disappear and immediately re-appear. In this situation,
+   * enumerate could first see the old state with a removed device resulting
+   * in it to not be discovered.
+   * As a hotplug event is seemingly emitted by the kernel immediately, we can
+   * simply make sure to process all events before returning from enumerate.
+   */
+  dispatched = TRUE;
+  while (priv->pending_devices || dispatched)
+    dispatched = g_main_context_iteration (NULL, !!priv->pending_devices);
 }
 
 /**
@@ -386,7 +587,7 @@ fp_context_enumerate (FpContext *context)
  *
  * Get all devices. fp_context_enumerate() will be called as needed.
  *
- * Returns: (transfer none) (element-type FpDevice): a new #GPtrArray of #GUsbDevice's.
+ * Returns: (transfer none) (element-type FpDevice): a new #GPtrArray of #FpDevice's.
  */
 GPtrArray *
 fp_context_get_devices (FpContext *context)

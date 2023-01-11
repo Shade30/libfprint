@@ -36,7 +36,7 @@ on_device_opened (FpDevice *dev, GAsyncResult *res, FptContext *tctx)
 static void
 test_device_open_async (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open (tctx->device, NULL, (GAsyncReadyCallback) on_device_opened, tctx);
 
@@ -59,7 +59,7 @@ on_device_closed (FpDevice *dev, GAsyncResult *res, FptContext *tctx)
 static void
 test_device_close_async (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open (tctx->device, NULL, (GAsyncReadyCallback) on_device_opened, tctx);
   while (!tctx->user_data)
@@ -76,7 +76,7 @@ static void
 test_device_open_sync (void)
 {
   g_autoptr(GError) error = NULL;
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, &error);
   g_assert_no_error (error);
@@ -97,7 +97,7 @@ static void
 test_device_open_sync_notify (void)
 {
   g_autoptr(GError) error = NULL;
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   g_signal_connect (tctx->device, "notify::open", G_CALLBACK (on_open_notify), tctx);
   fp_device_open_sync (tctx->device, NULL, &error);
@@ -109,7 +109,7 @@ static void
 test_device_close_sync (void)
 {
   g_autoptr(GError) error = NULL;
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
   fp_device_close_sync (tctx->device, NULL, &error);
@@ -131,7 +131,7 @@ static void
 test_device_close_sync_notify (void)
 {
   g_autoptr(GError) error = NULL;
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
 
@@ -144,7 +144,7 @@ test_device_close_sync_notify (void)
 static void
 test_device_get_driver (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
   g_assert_cmpstr (fp_device_get_driver (tctx->device), ==, "virtual_image");
@@ -153,7 +153,7 @@ test_device_get_driver (void)
 static void
 test_device_get_device_id (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
   g_assert_cmpstr (fp_device_get_device_id (tctx->device), ==, "0");
@@ -162,7 +162,7 @@ test_device_get_device_id (void)
 static void
 test_device_get_name (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
   g_assert_cmpstr (fp_device_get_name (tctx->device), ==,
@@ -172,16 +172,25 @@ test_device_get_name (void)
 static void
 test_device_get_scan_type (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
   g_assert_cmpint (fp_device_get_scan_type (tctx->device), ==, FP_SCAN_TYPE_SWIPE);
 }
 
 static void
+test_device_get_finger_status (void)
+{
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
+
+  fp_device_open_sync (tctx->device, NULL, NULL);
+  g_assert_cmpint (fp_device_get_finger_status (tctx->device), ==, FP_FINGER_STATUS_NONE);
+}
+
+static void
 test_device_get_nr_enroll_stages (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
   g_assert_cmpuint (fp_device_get_nr_enroll_stages (tctx->device), ==, 5);
@@ -190,28 +199,67 @@ test_device_get_nr_enroll_stages (void)
 static void
 test_device_supports_identify (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
-  g_assert_true (fp_device_supports_identify (tctx->device));
+  g_assert_true (fp_device_has_feature (tctx->device, FP_DEVICE_FEATURE_IDENTIFY));
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    g_assert_true (fp_device_supports_identify (tctx->device));
+  G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
 static void
 test_device_supports_capture (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
-  g_assert_true (fp_device_supports_capture (tctx->device));
+  g_assert_true (fp_device_has_feature (tctx->device, FP_DEVICE_FEATURE_CAPTURE));
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    g_assert_true (fp_device_supports_capture (tctx->device));
+  G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
 static void
 test_device_has_storage (void)
 {
-  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_imgdev ();
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
 
   fp_device_open_sync (tctx->device, NULL, NULL);
-  g_assert_false (fp_device_has_storage (tctx->device));
+  g_assert_false (fp_device_has_feature (tctx->device, FP_DEVICE_FEATURE_STORAGE));
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    g_assert_false (fp_device_has_storage (tctx->device));
+  G_GNUC_END_IGNORE_DEPRECATIONS
+}
+
+static void
+test_device_identify_cancelled (void)
+{
+  g_autoptr(GCancellable) cancellable = NULL;
+  g_autoptr(GPtrArray) prints = NULL;
+  g_autoptr(GError) error = NULL;
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
+
+  fp_device_open_sync (tctx->device, NULL, NULL);
+
+  prints = g_ptr_array_new ();
+  cancellable = g_cancellable_new ();
+  g_cancellable_cancel (cancellable);
+  g_assert_false (fp_device_identify_sync (tctx->device, prints, cancellable,
+                                           NULL, NULL, NULL, NULL, &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+}
+
+static void
+test_device_identify_null_prints (void)
+{
+  g_autoptr(GError) error = NULL;
+  g_autoptr(FptContext) tctx = fpt_context_new_with_virtual_device (FPT_VIRTUAL_DEVICE_IMAGE);
+
+  fp_device_open_sync (tctx->device, NULL, NULL);
+  g_assert_false (fp_device_identify_sync (tctx->device, NULL, NULL, NULL,
+                                           NULL, NULL, NULL, &error));
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID);
 }
 
 int
@@ -229,10 +277,13 @@ main (int argc, char *argv[])
   g_test_add_func ("/device/sync/get_device_id", test_device_get_device_id);
   g_test_add_func ("/device/sync/get_name", test_device_get_name);
   g_test_add_func ("/device/sync/get_scan_type", test_device_get_scan_type);
+  g_test_add_func ("/device/sync/get_finger_status", test_device_get_finger_status);
   g_test_add_func ("/device/sync/get_nr_enroll_stages", test_device_get_nr_enroll_stages);
   g_test_add_func ("/device/sync/supports_identify", test_device_supports_identify);
   g_test_add_func ("/device/sync/supports_capture", test_device_supports_capture);
   g_test_add_func ("/device/sync/has_storage", test_device_has_storage);
+  g_test_add_func ("/device/sync/identify/cancelled", test_device_identify_cancelled);
+  g_test_add_func ("/device/sync/identify/null-prints", test_device_identify_null_prints);
 
   return g_test_run ();
 }

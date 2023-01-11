@@ -38,6 +38,8 @@ fpi_device_fake_probe (FpDevice *device)
   fake_dev->last_called_function = fpi_device_fake_probe;
   g_assert_cmpuint (fpi_device_get_current_action (device), ==, FPI_DEVICE_ACTION_PROBE);
 
+  fpi_device_update_features (device, fake_dev->probe_features_update, fake_dev->probe_features_value);
+
   if (fake_dev->return_action_error)
     {
       fpi_device_action_error (device, fake_dev->ret_error);
@@ -185,6 +187,7 @@ fpi_device_fake_identify (FpDevice *device)
   else
     {
       fpi_device_identify_complete (device, fake_dev->ret_error);
+      g_clear_object (&fake_dev->ret_print);
     }
 }
 
@@ -244,12 +247,49 @@ fpi_device_fake_delete (FpDevice *device)
 }
 
 static void
+fpi_device_fake_clear_storage (FpDevice *device)
+{
+  FpiDeviceFake *fake_dev = FPI_DEVICE_FAKE (device);
+
+  fake_dev->last_called_function = fpi_device_fake_clear_storage;
+  g_assert_cmpuint (fpi_device_get_current_action (device), ==, FPI_DEVICE_ACTION_CLEAR_STORAGE);
+
+  if (fake_dev->return_action_error)
+    {
+      fpi_device_action_error (device, fake_dev->ret_error);
+      return;
+    }
+
+  fpi_device_clear_storage_complete (device, fake_dev->ret_error);
+}
+
+static void
 fpi_device_fake_cancel (FpDevice *device)
 {
   FpiDeviceFake *fake_dev = FPI_DEVICE_FAKE (device);
 
   fake_dev->last_called_function = fpi_device_fake_cancel;
   g_assert_cmpuint (fpi_device_get_current_action (device), !=, FPI_DEVICE_ACTION_NONE);
+}
+
+static void
+fpi_device_fake_suspend (FpDevice *device)
+{
+  FpiDeviceFake *fake_dev = FPI_DEVICE_FAKE (device);
+
+  fake_dev->last_called_function = fpi_device_fake_suspend;
+
+  fpi_device_suspend_complete (device, g_steal_pointer (&fake_dev->ret_suspend));
+}
+
+static void
+fpi_device_fake_resume (FpDevice *device)
+{
+  FpiDeviceFake *fake_dev = FPI_DEVICE_FAKE (device);
+
+  fake_dev->last_called_function = fpi_device_fake_resume;
+
+  fpi_device_resume_complete (device, g_steal_pointer (&fake_dev->ret_resume));
 }
 
 static void
@@ -279,4 +319,9 @@ fpi_device_fake_class_init (FpiDeviceFakeClass *klass)
   dev_class->list = fpi_device_fake_list;
   dev_class->delete = fpi_device_fake_delete;
   dev_class->cancel = fpi_device_fake_cancel;
+  dev_class->clear_storage = fpi_device_fake_clear_storage;
+  dev_class->suspend = fpi_device_fake_suspend;
+  dev_class->resume = fpi_device_fake_resume;
+
+  fpi_device_class_auto_initialize_features (dev_class);
 }

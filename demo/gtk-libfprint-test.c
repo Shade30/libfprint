@@ -241,6 +241,8 @@ dev_capture_start_cb (FpDevice     *dev,
       if (error->domain == FP_DEVICE_RETRY ||
           g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         libfprint_demo_set_mode (win, RETRY_MODE);
+      else if (g_error_matches (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED))
+        libfprint_demo_set_mode (win, NOIMAGING_MODE);
       else
         libfprint_demo_set_mode (win, ERROR_MODE);
       return;
@@ -524,7 +526,7 @@ libfprint_demo_window_init (LibfprintDemoWindow *window)
       return;
     }
 
-  if (!fp_device_supports_capture (g_ptr_array_index (devices, 0)))
+  if (!fp_device_has_feature (g_ptr_array_index (devices, 0), FP_DEVICE_FEATURE_CAPTURE))
     {
       libfprint_demo_set_mode (window, NOIMAGING_MODE);
       return;

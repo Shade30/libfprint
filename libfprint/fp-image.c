@@ -20,6 +20,7 @@
 
 #define FP_COMPONENT "image"
 
+#include "fpi-compat.h"
 #include "fpi-image.h"
 #include "fpi-log.h"
 
@@ -281,7 +282,7 @@ fp_image_detect_minutiae_thread_func (GTask        *task,
   gint map_w, map_h;
   gint bw, bh, bd;
   gint r;
-  g_autofree LFSPARMS *lfsparms;
+  g_autofree LFSPARMS *lfsparms = NULL;
 
   /* Normalize the image first */
   if (data->flags & FPI_IMAGE_H_FLIPPED)
@@ -295,7 +296,7 @@ fp_image_detect_minutiae_thread_func (GTask        *task,
 
   data->flags &= ~(FPI_IMAGE_H_FLIPPED | FPI_IMAGE_V_FLIPPED | FPI_IMAGE_COLORS_INVERTED);
 
-  lfsparms = g_memdup (&g_lfsparms_V2, sizeof (LFSPARMS));
+  lfsparms = g_memdup2 (&g_lfsparms_V2, sizeof (LFSPARMS));
   lfsparms->remove_perimeter_pts = data->flags & FPI_IMAGE_PARTIAL ? TRUE : FALSE;
 
   timer = g_timer_new ();

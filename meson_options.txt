@@ -7,11 +7,19 @@ option('introspection',
        type: 'boolean',
        value: true)
 option('udev_rules',
-       description: 'Whether to create a udev rules file',
-       type: 'boolean',
-       value: true)
+       description: 'Whether to create and install udev rules (auto: turn on when needed by a driver)',
+       type: 'feature',
+       value: 'auto')
 option('udev_rules_dir',
        description: 'Installation path for udev rules',
+       type: 'string',
+       value: 'auto')
+option('udev_hwdb',
+       description: 'Whether to create a udev hwdb for autosuspend (included in systemd v248 and later)',
+       type: 'feature',
+       value: 'auto')
+option('udev_hwdb_dir',
+       description: 'Installation path for udev hwdb',
        type: 'string',
        value: 'auto')
 option('gtk-examples',

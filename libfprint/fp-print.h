@@ -66,12 +66,19 @@ typedef enum {
   FP_FINGER_LAST = FP_FINGER_RIGHT_LITTLE,
 } FpFinger;
 
-FpPrint *fp_print_new (FpDevice *device);
+/**
+ * FpFingerStatusFlags:
+ * @FP_FINGER_STATUS_NONE: Sensor has not the finger on it, nor requires it
+ * @FP_FINGER_STATUS_NEEDED: Sensor waits for the finger
+ * @FP_FINGER_STATUS_PRESENT: Sensor has the finger on it
+ */
+typedef enum {
+  FP_FINGER_STATUS_NONE    = 0,
+  FP_FINGER_STATUS_NEEDED  = 1 << 0,
+  FP_FINGER_STATUS_PRESENT = 1 << 1,
+} FpFingerStatusFlags;
 
-FpPrint *fp_print_new_from_data (guchar *data,
-                                 gsize   length);
-gboolean fp_print_to_data (guchar **data,
-                           gsize    length);
+FpPrint *fp_print_new (FpDevice *device);
 
 const gchar *fp_print_get_driver (FpPrint *print);
 const gchar *fp_print_get_device_id (FpPrint *print);
