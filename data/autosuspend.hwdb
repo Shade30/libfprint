@@ -252,6 +252,12 @@ usb:v138Ap0050*
  ID_AUTOSUSPEND=1
  ID_PERSIST=0
 
+# Supported by libfprint driver vfs0090
+usb:v138Ap0090*
+usb:v138Ap0097*
+ ID_AUTOSUSPEND=1
+ ID_PERSIST=0
+
 # Supported by libfprint driver vfs101
 usb:v138Ap0001*
  ID_AUTOSUSPEND=1
@@ -330,10 +336,8 @@ usb:v138Ap003A*
 usb:v138Ap003C*
 usb:v138Ap003D*
 usb:v138Ap003F*
-usb:v138Ap0090*
 usb:v138Ap0092*
 usb:v138Ap0094*
-usb:v138Ap0097*
 usb:v138Ap009D*
 usb:v138Ap00AB*
 usb:v147Ep1002*
