@@ -1,3 +1,3 @@
 [submodule "vfs0090 driver"]
 	path = libfprint/drivers/vfs0090
-	url = git@github.com:Shade30/libfprint-tod-vfs0090.git
+	url = https://github.com/Shade30/libfprint-tod-vfs0090.git
